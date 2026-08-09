@@ -1,0 +1,12 @@
+Cartopy>=0.23.0
+botorch==0.10.0
+torch>=2.4.0
+gpytorch>=1.11
+pandas>=2.2.2
+geometric_kernels>=0.2.1
+scipy>=1.13.1
+joblib>=1.4.2
+tqdm>=4.66.5
+h5py>=3.11.0
+tables>=3.10.1 # Earlier version of tables is not compatible with numpy 2.x. If using tables<3.10.1, downgrade numpy to version 1.26.4.
+PyYAML

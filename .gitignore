@@ -1,0 +1,5 @@
+# Ignore DRF data
+DeepRandomFeatures/gdrive_data/
+
+# Ignore SWOT data
+SWOT experiments/data
