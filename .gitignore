@@ -3,3 +3,5 @@ DeepRandomFeatures/gdrive_data/
 
 # Ignore SWOT data
 SWOT experiments/data
+
+.vscode/
