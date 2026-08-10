@@ -19,6 +19,18 @@ There is no top-level build system, test suite, or CI tying the two together —
 
 ## Setup and running code
 
+**Windows GPU note:** `pip install torch` on Windows defaults to a CPU-only
+build, even on a machine with a working NVIDIA GPU/driver (unlike Linux,
+where the default plain install pulls a CUDA-enabled build automatically).
+If `torch.cuda.is_available()` returns `False` despite `nvidia-smi` showing
+a working GPU, reinstall torch from the CUDA wheel index, e.g.:
+
+    pip install torch --index-url https://download.pytorch.org/whl/cu126 --force-reinstall
+
+Check your GPU driver's CUDA version (`nvidia-smi`) to pick a matching or
+older `cuXXX` index — newer drivers are backward compatible with older
+CUDA runtimes.
+
 ```bash
 # From DeepRandomFeatures/
 python3 -m venv venv
