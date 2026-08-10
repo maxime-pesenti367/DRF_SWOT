@@ -5,4 +5,5 @@ DeepRandomFeatures/gdrive_data/
 SWOT experiments/data
 
 .vscode/
-venv/*.egg-info/
+venv/
+**/*.egg-info/
