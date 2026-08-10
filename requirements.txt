@@ -3,7 +3,7 @@ botorch==0.10.0
 torch>=2.4.0
 gpytorch>=1.11
 pandas>=2.2.2
-geometric_kernels>=0.2.1
+geometric_kernels==0.2.1
 scipy>=1.13.1
 joblib>=1.4.2
 tqdm>=4.66.5
