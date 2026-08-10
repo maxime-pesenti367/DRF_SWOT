@@ -1,8 +1,9 @@
 # Ignore DRF data
 DeepRandomFeatures/gdrive_data/
 
-# Ignore SWOT data
+# Ignore SWOT data and results
 SWOT experiments/data
+SWOT experiments/results
 
 .vscode/
 venv/
