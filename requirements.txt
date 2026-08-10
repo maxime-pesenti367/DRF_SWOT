@@ -8,5 +8,6 @@ scipy>=1.13.1
 joblib>=1.4.2
 tqdm>=4.66.5
 h5py>=3.11.0
-tables>=3.10.1 # Earlier version of tables is not compatible with numpy 2.x. If using tables<3.10.1, downgrade numpy to version 1.26.4.
+tables>=3.9.2 # Earlier version of tables is not compatible with numpy 2.x. If using tables<3.10.1, downgrade numpy to version 1.26.4.
+numpy==1.26.4
 PyYAML
