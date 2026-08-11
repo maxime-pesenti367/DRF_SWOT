@@ -36,5 +36,7 @@ results:
   csv_filename: 'results/exp3/results.csv'
   predictions_filename: 'results/exp3/final_predictions.pt'
   variance_filename: 'results/exp3/final_variance.pt'
-  plot_filename: 'results/exp3/final_variance.png'
+  plot_mean_filename: 'results/exp3/final_mean.png'
+  plot_variance_filename: 'results/exp3/final_variance.png'
   individual_predictions_filename: 'results/exp3/individual_final_predictions.pt'
+  
