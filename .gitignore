@@ -8,3 +8,6 @@ SWOT experiments/results
 .vscode/
 venv/
 **/*.egg-info/
+
+__pycache__/
+*.pyc
