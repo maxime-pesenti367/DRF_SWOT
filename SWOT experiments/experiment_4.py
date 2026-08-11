@@ -8,7 +8,7 @@ import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 from torch.utils.data import TensorDataset
 from DRF.models import DeepMaternRandomPhaseS2RFFNN
-from DRF.spherical_uq_methods import SphericalBayesianOptimizer
+from DRF.spherical_uq_methods import SphericalBayesianOptimizer, train_model_process
 from pathlib import Path
 
 if __name__ == '__main__':
@@ -23,7 +23,7 @@ if __name__ == '__main__':
 
     # 2. LOAD YOUR SAVED TENSORS (Added weights_only=False to suppress warning)
     print("Loading pre-processed data...")
-    data = torch.load('G:/My Drive/SWOT Project/data/pytorch tensors/small_experiment.pt', weights_only=False)
+    data = torch.load(config["data"]["tensor_data_path"], weights_only=False)
 
     spatial_X_train = data['spatial_X_train']
     temporal_X_train = data['temporal_X_train']
@@ -220,46 +220,97 @@ if __name__ == '__main__':
     plt.savefig(output_path_variance, dpi=300)
     plt.show()
 
-
-
-
-
-
-
-
     
-    import matplotlib.pyplot as plt
+    # ------------------------------------------------------------------
+    # Whole-globe snapshot: forward-pass the trained ensemble over a dense
+    # global lon/lat grid at a single reference time (the dataset's mean
+    # timestamp -> normalized time = 0.0), instead of only at the sparse
+    # along-track test points plotted above. No model weights were saved
+    # during optimization, so this retrains the ensemble with the winning
+    # hyperparameters and points its inference step at the grid instead.
+    # ------------------------------------------------------------------
+    print("Building global grid for whole-globe snapshot...")
+
+    grid_lons_deg = torch.linspace(-180, 180, _NUM_LONGS)
+    grid_lats_deg = torch.linspace(-90, 90, _NUM_LATS)
+    grid_lon_grid, grid_lat_grid = torch.meshgrid(
+        grid_lons_deg, grid_lats_deg, indexing="ij"
+    )
+    grid_coords_rad = torch.stack(
+        [
+            torch.deg2rad(grid_lon_grid.reshape(-1)),
+            torch.deg2rad(grid_lat_grid.reshape(-1)),
+        ],
+        dim=1,
+    )
+    grid_spatial_X = ((grid_coords_rad - spatial_mean) / spatial_std).to(device)
+    grid_temporal_X = torch.zeros(
+        grid_spatial_X.shape[0], 1, device=device
+    )  # normalized mean time
+    grid_dataset = TensorDataset(grid_spatial_X, grid_temporal_X)
+
+    grid_predictions = []
+    for seed in range(config["training"]["num_models"]):
+        _, _, _, grid_preds = train_model_process(
+            model_class=DeepMaternRandomPhaseS2RFFNN,
+            train_data=train_dataset,
+            val_data=train_dataset,
+            test_data=grid_dataset,
+            num_layers=config["model"]["num_layers"],
+            spatial_input_dim=3,
+            temporal_input_dim=1,
+            hidden_dim=config["model"]["hidden_dim"],
+            bottleneck_dim=config["model"]["bottleneck_dim"],
+            output_dim=config["model"]["output_dim"],
+            spatial_rff_layer_type="MaternRandomPhaseS2RFFLayer",
+            temporal_rff_layer_type="Matern",
+            hyperparams=best_hyperparams,
+            seed=seed,
+            device=device,
+            nu=config["model"]["kwargs"].get("nu", 1.5),
+            d_phi=d_phi,
+            d_theta=d_theta,
+            n_epochs=config["training"]["num_epochs"],
+        )
+        grid_predictions.append(torch.tensor(grid_preds))
+
+    grid_predictions = torch.stack(grid_predictions)  # [num_models, N_grid, 1]
+    grid_mean_pred = grid_predictions.mean(dim=0).squeeze().reshape(_NUM_LONGS, _NUM_LATS)
+    grid_var_pred = grid_predictions.var(dim=0).squeeze().reshape(_NUM_LONGS, _NUM_LATS)
+    print("Global grid predictions computed.")
+
     fig, ax = plt.subplots(
         subplot_kw={"projection": ccrs.PlateCarree(central_longitude=0)}
     )
     ssha_plot = ax.imshow(
-        final_test_predictions.reshape(_NUM_LONGS, _NUM_LATS).T,
+        grid_mean_pred.T.numpy(),
         origin="lower",
         cmap="coolwarm",
-        extent=[0, 360, -90, 90],
+        extent=[-180, 180, -90, 90],
+        transform=ccrs.PlateCarree(),
         vmin=-0.25,
         vmax=0.25,
     )
     ax.coastlines()
     ax.add_feature(cfeature.BORDERS, linestyle=":")
-    output_path_nn = config["results"]["plot_mean_filename"]
-    plt.savefig(output_path_nn, dpi=300)
+    plt.colorbar(ssha_plot, ax=ax, orientation="horizontal", pad=0.05, label="Predicted SLA (m)")
+    plt.savefig(config["results"]["plot_mean_grid_filename"], dpi=300)
     plt.show()
 
     fig, ax = plt.subplots(
         subplot_kw={"projection": ccrs.PlateCarree(central_longitude=0)}
     )
     variance_plot = ax.imshow(
-        var_final_pred.reshape(_NUM_LONGS, _NUM_LATS).T,
+        grid_var_pred.T.numpy(),
         origin="lower",
-        cmap="viridis",  
-        extent=[0, 360, -90, 90],
-        vmin=0,  
+        cmap="viridis",
+        extent=[-180, 180, -90, 90],
+        transform=ccrs.PlateCarree(),
+        vmin=0,
         vmax=0.2,
     )
     ax.coastlines()
     ax.add_feature(cfeature.BORDERS, linestyle=":")
-    output_path_variance = config["results"]["plot_variance_filename"]
     plt.colorbar(variance_plot, ax=ax, orientation="horizontal", pad=0.05, label="Variance")
-    plt.savefig(output_path_variance, dpi=300)
+    plt.savefig(config["results"]["plot_variance_grid_filename"], dpi=300)
     plt.show()
