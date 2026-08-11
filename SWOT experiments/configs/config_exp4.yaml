@@ -1,6 +1,6 @@
 data:
   # Point this to the exact location where store_tensors() saved your dictionary
-  tensor_data_path: 'G:/My Drive/SWOT Project/data/pytorch tensors/small_experimentcd.pt'
+  tensor_data_path: 'G:/My Drive/SWOT Project/data/pytorch tensors/small_experiment.pt'
 
 device: 'cuda'
 
@@ -49,3 +49,7 @@ results:
   plot_mean_filename: 'results/exp4/final_mean.png'
   plot_variance_filename: 'results/exp4/final_variance.png'
   individual_predictions_filename: 'results/exp4/individual_final_predictions.pt'
+  # Whole-globe snapshot (dense grid, single reference time), separate from
+  # the along-track scatter plots above
+  plot_mean_grid_filename: 'results/exp4/final_mean_global.png'
+  plot_variance_grid_filename: 'results/exp4/final_variance_global.png'
