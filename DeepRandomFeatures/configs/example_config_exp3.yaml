@@ -1,6 +1,6 @@
 data:
-  file_path: '/gdrive_data/exp3.csv'  
-  test_data_path: '/gdrive_data/exp3_test_data.pt'
+  file_path: 'gdrive_data/exp3.csv'
+  test_data_path: 'gdrive_data/exp3_test_data.pt'
 device: 'cuda'
 model:
   name: 'DeepMaternRandomPhaseS2RFFNN'
