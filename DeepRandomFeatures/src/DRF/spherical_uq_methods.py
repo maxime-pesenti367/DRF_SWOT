@@ -68,13 +68,11 @@ def train_model_process(
     train_loader = DataLoader(train_data, batch_size=8000, shuffle=True)
     val_loader = DataLoader(val_data, batch_size=8000)
 
-    num_epochs = 1
-
-    for epoch in range(num_epochs):
+    for epoch in range(n_epochs):
         model.train()
         train_loss = 0
         train_loop = tqdm(
-            train_loader, desc=f"Epoch {epoch+1}/{num_epochs}", unit="batch"
+            train_loader, desc=f"Epoch {epoch+1}/{n_epochs}", unit="batch"
         )
 
         for batch in train_loop:
