@@ -1,5 +1,6 @@
 data:
-  tensor_data_path: 'G:/My Drive/SWOT Project/data/pytorch tensors/all_sats_1_day_experiment/spatial_block.pt'
+  experiment_name: 'all_sats_1_day_experiment'
+  split_name: 'spatial_block'
 
 device: 'cuda'
 
