@@ -12,3 +12,4 @@ tables>=3.9.2 # Earlier version of tables is not compatible with numpy 2.x. If u
 numpy==1.26.4
 PyYAML
 xarray
+copernicusmarine
