@@ -57,12 +57,13 @@ def get_drive_base_path(local_drive_letter="G"):
             return Path(f"{local_drive_letter}:/My Drive/SWOT Project/data"), Path('./data/temp')
         else:
             # No Windows-style Drive mount exists here (e.g. a remote Linux
-            # GPU cluster) -- fall back to a local folder relative to the
-            # current working directory instead of assuming a drive letter
-            # that doesn't mean anything on this OS. Override with the
-            # SWOT_DATA_DIR env var to point at a different location (e.g.
-            # a folder you've scp'd files into, or an rclone-mounted Drive).
-            local_base = os.environ.get("SWOT_DATA_DIR", "./data")
+            # GPU cluster) -- fall back to the folder that gets synced via
+            # `rclone copy gdrive:"SWOT Project/data/..." ~/DRF_SWOT/"SWOT
+            # experiments"/gdrive_data/...`, mirroring the same "data" root
+            # as the Windows Drive mount. Override with the SWOT_DATA_DIR
+            # env var to point at a different location.
+            default_local_base = Path.home() / "DRF_SWOT" / "SWOT experiments" / "gdrive_data"
+            local_base = os.environ.get("SWOT_DATA_DIR", str(default_local_base))
             print(f"Running Locally (non-Windows, no Drive mount assumed). Using '{local_base}'.")
             return Path(local_base), Path('./data/temp')
     
