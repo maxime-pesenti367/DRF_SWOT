@@ -1,0 +1,35 @@
+data:
+  tensor_data_path: 'G:/My Drive/SWOT Project/data/pytorch tensors/all_sats_1_day_experiment/spatial_block.pt'
+
+device: 'cuda'
+
+model:
+  name: 'DeepMaternRandomPhaseS2RFFNN'
+  num_layers: 3
+  hidden_dim: 1000
+  bottleneck_dim: 128
+  output_dim: 1
+  lon_lat_inputs: True
+  combine_type: 'concat'
+  kwargs:
+    nu: 1.5
+
+bayesian_optimization:
+  n_iterations: 1
+  initial_samples: 3
+  bounds:
+    - [1e-5, 0.1]  # spatial_lengthscale
+    - [1e-5, 10]   # temporal_lengthscale
+    - [1e-5, 1]    # amplitude
+    - [1e-5, 10]   # lengthscale2
+    - [1e-5, 1]    # amplitude2
+
+uq_method:
+  type: 'deep_ensemble'
+
+training:
+  num_epochs: 2
+  batch_size: 8000
+  learning_rate: 0.1
+  num_models: 5
+  p_weight: 0.95
