@@ -126,6 +126,8 @@ def train_model_process(
     with torch.no_grad():
         for batch in tqdm(grid_loader, desc="Predicting"):
             batch_spatial_input, batch_temporal_input = batch
+            batch_spatial_input = batch_spatial_input.to(device)
+            batch_temporal_input = batch_temporal_input.to(device)
             batch_preds = model(batch_spatial_input, batch_temporal_input).cpu().numpy()
             preds.append(batch_preds)
 
