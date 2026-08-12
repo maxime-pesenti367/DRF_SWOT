@@ -3,6 +3,7 @@ DeepRandomFeatures/gdrive_data/
 DeepRandomFeatures/results
 
 # Ignore SWOT data and results
+SWOT experiments/gdrive_data
 SWOT experiments/data
 SWOT experiments/results
 
