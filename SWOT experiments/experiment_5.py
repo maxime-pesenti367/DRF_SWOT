@@ -27,6 +27,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from DRF.models import DeepMaternRandomPhaseS2RFFNN
 from DRF.spherical_uq_methods import SphericalBayesianOptimizer
+from copernicus_pipeline import get_drive_base_path
 from model_io import save_checkpoint
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -141,8 +142,30 @@ if __name__ == "__main__":
 
     device = torch.device(config["device"])
 
-    tensor_path = SCRIPT_DIR / config["data"]["tensor_data_path"]
+    # Resolved the same way build_experiment_data.py saved it -- via
+    # get_drive_base_path(), not a hardcoded absolute path in the config.
+    # A path like 'G:/My Drive/...' only means anything on Windows; baking
+    # it into a config that's committed to git and run on multiple machines
+    # (e.g. this local machine and a remote Linux GPU cluster) breaks the
+    # moment it runs somewhere without that drive letter.
+    drive_base, _ = get_drive_base_path()
+    tensor_path = (
+        drive_base / "pytorch tensors" / config["data"]["experiment_name"]
+        / f"{config['data']['split_name']}.pt"
+    )
     print(f"Loading pre-split, pre-normalized tensors from {tensor_path}...")
+    if not tensor_path.exists():
+        raise FileNotFoundError(
+            f"Tensor file not found at: {tensor_path}\n"
+            f"Likely causes:\n"
+            f"  - build_experiment_data.py hasn't been run for "
+            f"'{config['data']['experiment_name']}' yet\n"
+            f"  - it was built on a different machine and needs to be "
+            f"copied here (e.g. via scp) into the path above\n"
+            f"  - on this machine, get_drive_base_path() has no real Drive "
+            f"mount and is falling back to a local folder (override with "
+            f"the SWOT_DATA_DIR env var if the file lives somewhere else)"
+        )
     data = torch.load(tensor_path, weights_only=False, map_location="cpu")
 
     spatial_X_train = data["spatial_X_train"]

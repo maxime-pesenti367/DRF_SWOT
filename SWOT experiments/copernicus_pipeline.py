@@ -1,6 +1,7 @@
 import os
 import sys
 import shutil
+import platform
 from pathlib import Path
 import xarray as xr
 import copernicusmarine
@@ -49,9 +50,21 @@ def get_drive_base_path(local_drive_letter="G"):
         drive.mount('/content/drive')
         return Path('/content/drive/MyDrive/SWOT Project/data'), Path('/content/temp_zarr')
     except ImportError:
-        # Running locally
-        print("Running Locally.")
-        return Path(f"{local_drive_letter}:/My Drive/SWOT Project/data"), Path('./data/temp')
+        if platform.system() == "Windows":
+            # Google Drive for Desktop mounts the user's Drive as a drive
+            # letter (e.g. G:) on Windows.
+            print("Running Locally (Windows).")
+            return Path(f"{local_drive_letter}:/My Drive/SWOT Project/data"), Path('./data/temp')
+        else:
+            # No Windows-style Drive mount exists here (e.g. a remote Linux
+            # GPU cluster) -- fall back to a local folder relative to the
+            # current working directory instead of assuming a drive letter
+            # that doesn't mean anything on this OS. Override with the
+            # SWOT_DATA_DIR env var to point at a different location (e.g.
+            # a folder you've scp'd files into, or an rclone-mounted Drive).
+            local_base = os.environ.get("SWOT_DATA_DIR", "./data")
+            print(f"Running Locally (non-Windows, no Drive mount assumed). Using '{local_base}'.")
+            return Path(local_base), Path('./data/temp')
     
 
 # Downloads and updates per-satellite Zarr stores on Google Drive
