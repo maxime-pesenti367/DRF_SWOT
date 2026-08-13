@@ -1,6 +1,6 @@
 data:
-  experiment_name: 'all_sats_1_day_experiment'
-  split_name: 'temporal_block'
+  experiment_name: 'all_sats_1_day'
+  split_name: 'random'
 
 device: 'cuda'
 

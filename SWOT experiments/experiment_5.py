@@ -5,7 +5,7 @@ exp5_implementation_plan.md (and exp3_exp4_findings_and_exp5_plan.md before
 it) for the full reasoning behind every design choice here.
 
 Usage:
-    python experiment_5.py --config configs/exp5/all_sats_1_day_random_spherical_drf.yaml
+    python experiment_5.py --config configs/exp5/exp_all_sats_1_day_random_shallow.yaml
 
 Consumes tensors already split and normalized by build_experiment_data.py —
 this script has zero knowledge of split strategy and does not re-split

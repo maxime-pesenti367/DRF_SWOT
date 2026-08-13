@@ -1,5 +1,5 @@
 data:
-  experiment_name: 'all_sats_1_day_experiment'
+  experiment_name: 'all_sats_1_day'
   split_name: 'spatial_block'
 
 device: 'cuda'

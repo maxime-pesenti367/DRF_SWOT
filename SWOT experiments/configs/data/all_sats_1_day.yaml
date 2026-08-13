@@ -1,4 +1,4 @@
-name: all_sats_1_day_experiment
+name: all_sats_1_day
 
 satellites:
   - {name: swot_nadir, freq: 1hz}

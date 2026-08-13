@@ -3,7 +3,7 @@ Builds one pre-split, pre-normalized .pt tensor file per split strategy
 listed in a data config.
 
 Usage:
-    python build_experiment_data.py --config configs/data/all_sats_1_day_experiment.yaml
+    python build_experiment_data.py --config configs/data/all_sats_1_day.yaml
 
 Orchestrates the *existing* fetch/load/combine pipeline from
 copernicus_pipeline.py, then applies one of data_splits.py's split
