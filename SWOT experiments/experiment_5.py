@@ -236,6 +236,7 @@ if __name__ == "__main__":
         n_iterations=config["bayesian_optimization"]["n_iterations"],
         n_initial_samples=config["bayesian_optimization"]["initial_samples"],
         n_epochs=config["training"]["num_epochs"],
+        max_parallel_models=config["training"].get("max_parallel_models"),
     )
 
     best_hyperparams, best_loss = optimizer.optimize(
