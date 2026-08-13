@@ -163,6 +163,7 @@ class SphericalBayesianOptimizer:
         n_iterations=10,
         n_initial_samples=15,
         n_epochs=1,
+        max_parallel_models=None,
     ):
         self.model_class = model_class
         self.train_data = train_data
@@ -183,6 +184,16 @@ class SphericalBayesianOptimizer:
         self.n_iterations = n_iterations
         self.n_initial_samples = n_initial_samples
         self.n_epochs = n_epochs
+        # Caps how many of the num_models ensemble members train
+        # concurrently in the multiprocessing pool below. Each concurrent
+        # worker holds its own CUDA context, so GPU memory scales with this
+        # number, not with num_models directly. Defaults to num_models
+        # (fully parallel, original behaviour) so existing callers
+        # (experiment_3.py/experiment_4.py) are unaffected unless they
+        # explicitly opt in to a lower value.
+        self.max_parallel_models = (
+            max_parallel_models if max_parallel_models is not None else num_models
+        )
         self.test_predictions_per_iteration = []
 
     def objective_function(self, hyperparams):
@@ -217,8 +228,20 @@ class SphericalBayesianOptimizer:
             for seed in range(self.num_models)
         ]
 
-        with mp.Pool(processes=self.num_models) as pool:
+        # mp.Pool(processes=k) with k < len(args_list) already queues the
+        # remaining tasks and runs them as earlier workers finish -- so
+        # capping `processes` at max_parallel_models is enough to bound
+        # peak concurrent GPU memory; no extra batching logic needed.
+        # Using close()+join() instead of the Pool context manager
+        # (which calls terminate() on exit) so worker processes -- and
+        # their CUDA contexts -- are torn down gracefully and memory is
+        # fully released before the next Bayesian-optimization round starts.
+        pool = mp.Pool(processes=self.max_parallel_models)
+        try:
             results = pool.starmap(train_model_process, args_list)
+        finally:
+            pool.close()
+            pool.join()
 
         val_losses, all_predictions, reg_losses, test_predictions = zip(*results)
         avg_val_loss = sum(val_losses) / len(val_losses)

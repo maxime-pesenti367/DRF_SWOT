@@ -39,4 +39,10 @@ training:
   batch_size: 8000
   learning_rate: 0.1
   num_models: 5
+  # Caps how many of the 5 ensemble members train concurrently per BO
+  # round -- each concurrent worker holds its own GPU memory, so this
+  # bounds peak VRAM to ~1x a single model instead of ~5x. Set to 1 for
+  # fully sequential (slowest, safest); raise it (e.g. to num_models) if
+  # you land on a GPU with enough headroom to go faster.
+  max_parallel_models: 1
   p_weight: 0.95
