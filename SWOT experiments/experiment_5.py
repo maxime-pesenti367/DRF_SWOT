@@ -301,15 +301,15 @@ if __name__ == "__main__":
     results_dir.mkdir(parents=True, exist_ok=True)
 
     results_df = pd.DataFrame([{
-        "spatial_lengthscale": spatial_lengthscale.item(),
-        "temporal_lengthscale": temporal_lengthscale.item(),
-        "amplitude": amplitude.item(),
-        "lengthscale2": lengthscale2.item(),
-        "amplitude2": amplitude2.item(),
-        "best_val_loss": best_loss_value,
-        "test_rmse": rmse,
-        "test_nlpd": nlpd,
-        "test_crps": crps,
+        "spatial_lengthscale": round(spatial_lengthscale.item(), 4),
+        "temporal_lengthscale": round(temporal_lengthscale.item(), 4),
+        "amplitude": round(amplitude.item(), 4),
+        "lengthscale2": round(lengthscale2.item(), 4),
+        "amplitude2": round(amplitude2.item(), 4),
+        "best_val_loss": round(best_loss_value, 4),
+        "test_rmse": round(rmse, 4),
+        "test_nlpd": round(nlpd, 4),
+        "test_crps": round(crps, 4),
     }])
     results_df.to_csv(results_dir / "results.csv", index=False)
 
