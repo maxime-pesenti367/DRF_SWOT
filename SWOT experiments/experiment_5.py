@@ -343,21 +343,47 @@ if __name__ == "__main__":
     print(f"Results, predictions, and checkpoints saved to {results_dir}")
 
     # --- Plots ---
-    # Scatter, not imshow — SWOT/altimeter tracks are sparse and irregular,
-    # not a dense grid (exp4 has a leftover duplicate imshow block from
-    # copy-pasting exp3's gridded-data plotting code; not repeating that
-    # here). Spatial data is raw radians (never z-scored), so converting
-    # back to degrees for plotting is a plain rad2deg — no normalization to
-    # reverse, unlike exp4.
-    test_lons = torch.rad2deg(spatial_X_test[:, 0]).numpy()
-    test_lats = torch.rad2deg(spatial_X_test[:, 1]).numpy()
+    # Dense global grid + imshow, matching exp3/exp4's whole-globe snapshot
+    # style rather than scattering over the sparse real test-set points --
+    # judged more informative for visualizing overall model behaviour, with
+    # real accuracy (RMSE/NLPD/CRPS above) already handled separately against
+    # the genuine held-out test set. Unlike exp4, no retrain is needed here:
+    # exp4 never saved weights so it had to retrain a fresh ensemble just to
+    # get grid predictions; exp5 already has `final_models` in memory (and
+    # checkpointed to disk), so we just forward-pass those over the grid.
+    # Spatial inputs are raw radians here (never z-scored, unlike exp4), so
+    # no normalization needs to be applied/reversed for the grid coordinates
+    # either.
+    _NUM_LONGS = 512
+    _NUM_LATS = 256
+    print("Building global grid for whole-globe snapshot...")
+
+    grid_lons_deg = torch.linspace(-180, 180, _NUM_LONGS)
+    grid_lats_deg = torch.linspace(-90, 90, _NUM_LATS)
+    grid_lon_grid, grid_lat_grid = torch.meshgrid(grid_lons_deg, grid_lats_deg, indexing="ij")
+    grid_spatial_X = torch.stack(
+        [torch.deg2rad(grid_lon_grid.reshape(-1)), torch.deg2rad(grid_lat_grid.reshape(-1))],
+        dim=1,
+    ).to(device)
+    # Normalized time = 0.0 -> the training set's mean timestamp (temporal
+    # data is z-scored using train-split mean/std; see normalization_stats).
+    grid_temporal_X = torch.zeros(grid_spatial_X.shape[0], 1, device=device)
+
+    with torch.no_grad():
+        grid_per_model_preds = torch.stack(
+            [model(grid_spatial_X, grid_temporal_X).cpu() for model in final_models]
+        )  # [num_models, N_grid, 1]
+
+    grid_mean_pred = grid_per_model_preds.mean(dim=0).squeeze().reshape(_NUM_LONGS, _NUM_LATS)
+    grid_var_pred = grid_per_model_preds.var(dim=0).squeeze().reshape(_NUM_LONGS, _NUM_LATS)
+    print("Global grid predictions computed.")
 
     fig, ax = plt.subplots(subplot_kw={"projection": ccrs.PlateCarree(central_longitude=0)})
-    mean_plot = ax.scatter(
-        test_lons, test_lats,
-        c=mean_pred.squeeze().numpy(),
+    mean_plot = ax.imshow(
+        grid_mean_pred.T.numpy(),
+        origin="lower",
         cmap="coolwarm",
-        s=15,
+        extent=[-180, 180, -90, 90],
         transform=ccrs.PlateCarree(),
         vmin=-0.25,
         vmax=0.25,
@@ -369,11 +395,11 @@ if __name__ == "__main__":
     plt.close(fig)
 
     fig, ax = plt.subplots(subplot_kw={"projection": ccrs.PlateCarree(central_longitude=0)})
-    var_plot = ax.scatter(
-        test_lons, test_lats,
-        c=var_pred.squeeze().numpy(),
+    var_plot = ax.imshow(
+        grid_var_pred.T.numpy(),
+        origin="lower",
         cmap="viridis",
-        s=15,
+        extent=[-180, 180, -90, 90],
         transform=ccrs.PlateCarree(),
         vmin=0,
         vmax=0.2,
