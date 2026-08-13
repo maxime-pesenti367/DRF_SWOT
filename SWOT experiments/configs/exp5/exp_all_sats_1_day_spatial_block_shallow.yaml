@@ -4,6 +4,12 @@ data:
 
 device: 'cuda'
 
+# Seeds only the Bayesian-optimization search (initial hyperparameter
+# guesses + acquisition-function random restarts) -- NOT the per-ensemble-
+# member training, which stays randomized across seeds 0..num_models-1 by
+# design (that's what gives the deep ensemble its uncertainty estimate).
+seed: 42
+
 model:
   name: 'DeepMaternRandomPhaseS2RFFNN'
   num_layers: 3

@@ -142,6 +142,18 @@ if __name__ == "__main__":
 
     device = torch.device(config["device"])
 
+    # Seeds only the Bayesian-optimization SEARCH itself (the random initial
+    # hyperparameter guesses in SphericalBayesianOptimizer.optimize(), plus
+    # botorch's internal acquisition-function random restarts) so that
+    # re-running the same config always explores the same candidates and
+    # lands on the same winning hyperparameters. Deliberately does NOT
+    # control per-ensemble-member randomness -- train_model_process() and
+    # train_final_model() already call torch.manual_seed(seed) themselves
+    # for each seed in range(num_models), and that diversity across seeds is
+    # what gives the deep ensemble its uncertainty estimate; this call must
+    # not be moved to a point where it would make those seeds redundant.
+    torch.manual_seed(config.get("seed", 42))
+
     # Resolved the same way build_experiment_data.py saved it -- via
     # get_drive_base_path(), not a hardcoded absolute path in the config.
     # A path like 'G:/My Drive/...' only means anything on Windows; baking
