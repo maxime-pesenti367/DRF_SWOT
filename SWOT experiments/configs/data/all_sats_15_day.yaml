@@ -1,0 +1,32 @@
+name: all_sats_15_day
+
+satellites:
+  - {name: swot_nadir, freq: 1hz}
+  - {name: jason3_interleaved, freq: 1hz}
+  - {name: jason3_LRO, freq: 1hz}
+  - {name: cryosat2, freq: 1hz}
+  - {name: sentinel3a, freq: 1hz}
+
+start_date: "2026-06-01"
+end_date: "2026-06-16"
+variables: ["sla_filtered"]
+
+splits:
+  - name: random
+    method: random
+    train: 0.70
+    val: 0.15
+    test: 0.15
+    seed: 42
+
+  - name: temporal_block
+    method: temporal_block
+    test_start_date: "2026-06-15"   # placeholder — smoke test only, see exp5_implementation_plan.md §6
+    val_fraction: 0.15
+    seed: 42
+
+  - name: spatial_block
+    method: spatial_block
+    test_bbox: {lon_min: -80, lon_max: -40, lat_min: 30, lat_max: 45}  # Gulf Stream region, placeholder — see §6
+    val_fraction: 0.15
+    seed: 42
