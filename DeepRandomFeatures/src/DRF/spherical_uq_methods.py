@@ -201,7 +201,13 @@ class SphericalBayesianOptimizer:
         Objective function for Bayesian optimization.
         Calculates the combined validation loss and regularization loss.
         """
-        mp.set_start_method("spawn", force=True)
+        # Only set the start method once per process, not once per BO round --
+        # multiprocessing's own docs say this should be called at most once;
+        # calling it repeatedly with force=True re-initializes the
+        # multiprocessing context on every round, a plausible contributor to
+        # the "leaked semaphore objects" warnings seen after multi-round runs.
+        if mp.get_start_method(allow_none=True) != "spawn":
+            mp.set_start_method("spawn", force=True)
         # Prepare arguments for multiprocessing
         args_list = [
             (
