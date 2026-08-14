@@ -102,6 +102,27 @@ def calculate_batch_nll(
     return total_loss, nll_loss
 
 
+def compute_rmse(mu, y):
+    return torch.sqrt(torch.mean((mu - y) ** 2)).item()
+
+
+def compute_nlpd(mu, var, y):
+    loss_fn = nn.GaussianNLLLoss(full=True, eps=1e-6, reduction="mean")
+    return loss_fn(mu, y, var).item()
+
+
+def compute_crps(mu, var, y):
+    """Closed-form CRPS for a Gaussian predictive distribution
+    (Gneiting & Raftery, 2007)."""
+    sigma = var.clamp(min=1e-12).sqrt()
+    z = (y - mu) / sigma
+    normal = torch.distributions.Normal(0.0, 1.0)
+    pdf_z = torch.exp(normal.log_prob(z))
+    cdf_z = normal.cdf(z)
+    crps = sigma * (z * (2 * cdf_z - 1) + 2 * pdf_z - 1.0 / torch.sqrt(torch.tensor(torch.pi)))
+    return crps.mean().item()
+
+
 def functional_regularisation_S2_batched(model, dataloader, d_phi, d_theta):
     """
     Computes the spherical functional regularisation term using minibatches for memory efficiency.

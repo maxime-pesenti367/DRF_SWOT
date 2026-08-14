@@ -27,36 +27,18 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from DRF.models import DeepMaternRandomPhaseS2RFFNN
 from DRF.spherical_uq_methods import SphericalBayesianOptimizer
+from DRF.utils import compute_rmse, compute_nlpd, compute_crps
 from copernicus_pipeline import get_drive_base_path
 from model_io import save_checkpoint
+from plot_search_history import plot_search_progress, plot_training_curve
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-
-
-def compute_rmse(mu, y):
-    return torch.sqrt(torch.mean((mu - y) ** 2)).item()
-
-
-def compute_nlpd(mu, var, y):
-    loss_fn = nn.GaussianNLLLoss(full=True, eps=1e-6, reduction="mean")
-    return loss_fn(mu, y, var).item()
-
-
-def compute_crps(mu, var, y):
-    """Closed-form CRPS for a Gaussian predictive distribution
-    (Gneiting & Raftery, 2007)."""
-    sigma = var.clamp(min=1e-12).sqrt()
-    z = (y - mu) / sigma
-    normal = torch.distributions.Normal(0.0, 1.0)
-    pdf_z = torch.exp(normal.log_prob(z))
-    cdf_z = normal.cdf(z)
-    crps = sigma * (z * (2 * cdf_z - 1) + 2 * pdf_z - 1.0 / torch.sqrt(torch.tensor(torch.pi)))
-    return crps.mean().item()
 
 
 def train_final_model(
     model_class,
     train_data,
+    val_data,
     num_layers,
     spatial_input_dim,
     temporal_input_dim,
@@ -74,7 +56,11 @@ def train_final_model(
 ):
     """
     Trains one model to completion and returns the model object itself (not
-    just its predictions), so its weights can be saved afterwards.
+    just its predictions), so its weights can be saved afterwards -- plus a
+    per-epoch train/val loss history, since this is the actual model whose
+    weights get checkpointed and used going forward, and previously had zero
+    logging at all (unlike the throwaway BO-search-phase models, which at
+    least print per-epoch loss to the terminal).
 
     Deliberately NOT routed through DRF.spherical_uq_methods.train_model_process
     — that function is reused as-is for the Bayesian-optimization search
@@ -82,8 +68,8 @@ def train_final_model(
     model, and extending its return contract would require also touching
     experiment_3.py/experiment_4.py's existing calls to it, which is out of
     scope here. This is a small, deliberate duplication of its training loop
-    for the one new thing it doesn't support: handing back a model whose
-    weights can actually be persisted.
+    for the two new things it doesn't support: handing back a model whose
+    weights can actually be persisted, and a loss history for it.
     """
     torch.manual_seed(seed)
     spatial_lengthscale, temporal_lengthscale, amplitude, lengthscale2, amplitude2 = hyperparams
@@ -112,9 +98,13 @@ def train_final_model(
     optimizer = optim.Adam(model.parameters(), lr=0.1)
     criterion = nn.HuberLoss(delta=0.1)
     train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_data, batch_size=batch_size)
 
-    model.train()
-    for _ in range(n_epochs):
+    epoch_history = []
+    for epoch in range(n_epochs):
+        model.train()
+        train_loss_sum = 0.0
+        n_train_batches = 0
         for batch in train_loader:
             batch_spatial, batch_temporal, batch_values = batch
             batch_spatial = batch_spatial.to(device)
@@ -127,8 +117,38 @@ def train_final_model(
             loss.backward()
             optimizer.step()
 
+            train_loss_sum += loss.item()
+            n_train_batches += 1
+        avg_train_loss = train_loss_sum / n_train_batches
+
+        model.eval()
+        val_loss_sum = 0.0
+        n_val_batches = 0
+        val_preds, val_targets = [], []
+        with torch.no_grad():
+            for batch in val_loader:
+                batch_spatial, batch_temporal, batch_values = batch
+                batch_spatial = batch_spatial.to(device)
+                batch_temporal = batch_temporal.to(device)
+                batch_values = batch_values.to(device)
+                outputs = model(batch_spatial, batch_temporal)
+                val_loss_sum += criterion(outputs, batch_values).item()
+                n_val_batches += 1
+                val_preds.append(outputs.cpu())
+                val_targets.append(batch_values.cpu())
+        avg_val_loss = val_loss_sum / n_val_batches
+        val_rmse = compute_rmse(torch.cat(val_preds), torch.cat(val_targets))
+
+        epoch_history.append({
+            "seed": seed,
+            "epoch": epoch + 1,
+            "train_loss": avg_train_loss,
+            "val_loss": avg_val_loss,
+            "val_rmse": val_rmse,
+        })
+
     model.eval()
-    return model
+    return model, epoch_history
 
 
 if __name__ == "__main__":
@@ -272,10 +292,12 @@ if __name__ == "__main__":
     )
 
     final_models = []
+    training_curve_records = []
     for seed in range(num_models):
-        model = train_final_model(
+        model, epoch_history = train_final_model(
             model_class=DeepMaternRandomPhaseS2RFFNN,
             train_data=train_dataset,
+            val_data=val_dataset,
             hyperparams=best_hyperparams,
             seed=seed,
             device=device,
@@ -284,6 +306,7 @@ if __name__ == "__main__":
             **model_config,
         )
         final_models.append(model)
+        training_curve_records.extend(epoch_history)
 
     # --- Predict on the REAL held-out test set with the final ensemble ---
     with torch.no_grad():
@@ -325,6 +348,28 @@ if __name__ == "__main__":
         "test_crps": round(crps, 4),
     }])
     results_df.to_csv(results_dir / "results.csv", index=False)
+
+    # --- Search history: every BO candidate tried, not just the winner ---
+    # optimizer.search_history is populated inside objective_function() --
+    # one record per hyperparameter candidate, in the order optimize() tried
+    # them (first n_initial_samples random draws, then n_iterations
+    # GP-guided ones), which is what lets round_type be derived purely from
+    # position rather than needing any new plumbing through objective_function.
+    search_history_df = pd.DataFrame(optimizer.search_history)
+    search_history_df["round_type"] = [
+        "initial_sample" if i < optimizer.n_initial_samples else "iteration"
+        for i in range(len(search_history_df))
+    ]
+    search_history_df["is_winner"] = (
+        search_history_df["final_loss"] == search_history_df["final_loss"].min()
+    )
+    search_history_df.to_csv(results_dir / "search_history.csv", index=False)
+
+    # --- Per-epoch train/val loss for the actual final ensemble ---
+    # Previously untracked entirely -- these are the models whose weights
+    # get checkpointed and used going forward, unlike the throwaway
+    # BO-search-phase models above.
+    pd.DataFrame(training_curve_records).to_csv(results_dir / "training_curve.csv", index=False)
 
     torch.save(mean_pred, results_dir / "final_predictions.pt")
     torch.save(var_pred, results_dir / "final_variance.pt")
@@ -409,5 +454,13 @@ if __name__ == "__main__":
     plt.colorbar(var_plot, ax=ax, orientation="horizontal", pad=0.05, label="Variance")
     plt.savefig(results_dir / "final_variance.png", dpi=300)
     plt.close(fig)
+
+    # --- Search-progress / training-curve plots ---
+    # Regenerable later without retraining via
+    # `python plot_search_history.py --results-dir results/<config-name>`
+    # (reads search_history.csv / training_curve.csv saved above) -- same
+    # relationship replot_grid.py has to the whole-globe grid snapshot.
+    plot_search_progress(results_dir)
+    plot_training_curve(results_dir)
 
     print("Done.")

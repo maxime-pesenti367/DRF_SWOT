@@ -4,7 +4,12 @@ import torch.optim as optim
 import torch.multiprocessing as mp
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from DRF.utils import functional_regularisation_S2_batched
+from DRF.utils import (
+    functional_regularisation_S2_batched,
+    compute_rmse,
+    compute_nlpd,
+    compute_crps,
+)
 from botorch.models import SingleTaskGP
 from botorch.models.transforms.input import Normalize
 from botorch.models.transforms.outcome import Standardize
@@ -197,6 +202,16 @@ class SphericalBayesianOptimizer:
             max_parallel_models if max_parallel_models is not None else num_models
         )
         self.test_predictions_per_iteration = []
+        # Per-round record of every hyperparameter candidate tried during
+        # optimize() (both the random initial_samples and the GP-guided
+        # n_iterations), kept separate from test_predictions_per_iteration
+        # above so that list's existing tuple structure -- and every
+        # existing reader of it, e.g. experiment_3.py's
+        # `for pred, nll, hyperparams in top_prediction:` -- stays
+        # completely unchanged. Populated in objective_function(); consumed
+        # by experiment_5.py (and, for free, any future experiment built on
+        # this same optimizer) to save/plot search progress.
+        self.search_history = []
 
     def objective_function(self, hyperparams):
         """
@@ -255,6 +270,10 @@ class SphericalBayesianOptimizer:
         avg_val_loss = sum(val_losses) / len(val_losses)
         avg_reg_loss = sum(reg_losses) / len(reg_losses)
         avg_predictions = torch.stack(all_predictions).mean(dim=0).to(self.device)
+        # Ensemble variance across the num_models members' val predictions --
+        # computed here purely for the val_nlpd/val_crps tracking below, same
+        # source tensors as avg_predictions just above, no extra training.
+        var_predictions = torch.stack(all_predictions).var(dim=0).to(self.device)
         val_loader = DataLoader(self.val_data, batch_size=900)
 
         all_val_values = []
@@ -272,6 +291,25 @@ class SphericalBayesianOptimizer:
         self.test_predictions_per_iteration.append(
             (test_predictions, final_loss, hyperparams)
         )
+
+        def to_float(x):
+            return x.item() if torch.is_tensor(x) else x
+
+        spatial_lengthscale, temporal_lengthscale, amplitude, lengthscale2, amplitude2 = hyperparams
+        self.search_history.append({
+            "round": len(self.search_history),
+            "spatial_lengthscale": to_float(spatial_lengthscale),
+            "temporal_lengthscale": to_float(temporal_lengthscale),
+            "amplitude": to_float(amplitude),
+            "lengthscale2": to_float(lengthscale2),
+            "amplitude2": to_float(amplitude2),
+            "huber_loss": huber_loss.item(),
+            "avg_reg_loss": avg_reg_loss,
+            "final_loss": final_loss,
+            "val_rmse": compute_rmse(avg_predictions, val_values),
+            "val_nlpd": compute_nlpd(avg_predictions, var_predictions, val_values),
+            "val_crps": compute_crps(avg_predictions, var_predictions, val_values),
+        })
 
         return final_loss
 
