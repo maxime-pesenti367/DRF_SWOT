@@ -1,0 +1,21 @@
+# Dependencies for the data-fetching side only (build_experiment_data.py /
+# copernicus_pipeline.py), installed into a SEPARATE venv from the main
+# requirements.txt -- see "Setup and running code" in CLAUDE.md for why.
+#
+# Deliberately no numpy pin here: copernicusmarine>=2.4.1 requires
+# numpy>=2.1.0, which is incompatible with the numpy==1.26.4 pin the main
+# venv needs for geomstats/geometric_kernels. Keeping this venv separate is
+# what lets copernicusmarine stay on a recent version.
+
+numpy
+pandas
+torch
+PyYAML
+xarray
+copernicusmarine
+
+# Only needed if you also want display_tracks.py's ground-track density
+# plots (e.g. from a notebook) in this venv -- build_experiment_data.py
+# itself doesn't use either.
+matplotlib
+Cartopy>=0.23.0
