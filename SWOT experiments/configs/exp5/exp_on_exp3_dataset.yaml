@@ -1,0 +1,48 @@
+data:
+  experiment_name: 'exp3_dataset'
+  split_name: 'random'
+
+device: 'cuda'
+
+# Seeds only the Bayesian-optimization search (initial hyperparameter
+# guesses + acquisition-function random restarts) -- NOT the per-ensemble-
+# member training, which stays randomized across seeds 0..num_models-1 by
+# design (that's what gives the deep ensemble its uncertainty estimate).
+seed: 42
+
+model:
+  name: 'DeepMaternRandomPhaseS2RFFNN'
+  num_layers: 3
+  hidden_dim: 1000
+  bottleneck_dim: 128
+  output_dim: 1
+  lon_lat_inputs: True
+  combine_type: 'concat'
+  kwargs:
+    nu: 1.5
+
+bayesian_optimization:
+  n_iterations: 1
+  initial_samples: 1
+  bounds:
+    - [1e-5, 0.1]  # spatial_lengthscale
+    - [1e-5, 10]   # temporal_lengthscale
+    - [1e-5, 1]    # amplitude
+    - [1e-5, 10]   # lengthscale2
+    - [1e-5, 1]    # amplitude2
+
+uq_method:
+  type: 'deep_ensemble'
+
+training:
+  num_epochs: 1
+  batch_size: 8000
+  learning_rate: 0.1
+  num_models: 5
+  # Caps how many of the 5 ensemble members train concurrently per BO
+  # round -- each concurrent worker holds its own GPU memory, so this
+  # bounds peak VRAM to ~1x a single model instead of ~5x. Set to 1 for
+  # fully sequential (slowest, safest); raise it (e.g. to num_models) if
+  # you land on a GPU with enough headroom to go faster.
+  max_parallel_models: 5
+  p_weight: 0.95
