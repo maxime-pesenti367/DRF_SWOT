@@ -11,8 +11,6 @@ from DRF.utils import (
     compute_crps,
 )
 from botorch.models import SingleTaskGP
-from botorch.models.transforms.input import Normalize
-from botorch.models.transforms.outcome import Standardize
 from botorch.fit import fit_gpytorch_model
 from botorch.acquisition import ExpectedImprovement
 from botorch.optim import optimize_acqf
@@ -335,24 +333,7 @@ class SphericalBayesianOptimizer:
         n_iterations = self.n_iterations
 
         for i in range(n_iterations):
-            # input_transform/outcome_transform put the GP surrogate's own
-            # internal fit on a well-scaled footing: the 5 hyperparameters
-            # span wildly different raw ranges (e.g. spatial_lengthscale
-            # 1e-5-0.1 vs temporal_lengthscale 1e-5-10), which otherwise lets
-            # the wider dimensions dominate the GP's distance metric and
-            # starves it of sensitivity to the narrower ones; final_loss
-            # values can also span many orders of magnitude across
-            # candidates. Both transforms are applied/reversed automatically
-            # by botorch wherever the model is used below (posterior calls,
-            # best_f comparisons, optimize_acqf's candidate search) -- every
-            # other line in this loop keeps operating in raw, original units
-            # unchanged.
-            model = SingleTaskGP(
-                train_x,
-                train_y,
-                input_transform=Normalize(d=train_x.shape[-1], bounds=bounds),
-                outcome_transform=Standardize(m=1),
-            )
+            model = SingleTaskGP(train_x, train_y)
             mll = ExactMarginalLogLikelihood(model.likelihood, model)
             fit_gpytorch_model(mll)
 
