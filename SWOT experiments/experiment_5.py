@@ -28,7 +28,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from DRF.models import DeepMaternRandomPhaseS2RFFNN
 from DRF.spherical_uq_methods import SphericalBayesianOptimizer
 from DRF.utils import compute_rmse, compute_nlpd, compute_crps
-from copernicus_pipeline import get_drive_base_path
+from drive_paths import get_drive_base_path
 from model_io import save_checkpoint
 from plot_search_history import plot_search_progress, plot_training_curve
 
