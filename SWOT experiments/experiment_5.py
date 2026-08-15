@@ -309,12 +309,26 @@ if __name__ == "__main__":
         training_curve_records.extend(epoch_history)
 
     # --- Predict on the REAL held-out test set with the final ensemble ---
+    # Batched (not one giant forward pass) -- large test sets (e.g. exp3's
+    # ~1.2M-row test split) blow up GPU memory otherwise: the spherical
+    # layer's RandomPhaseFeatureMap materializes a (hidden_dim, N) tensor
+    # internally, which for hidden_dim=1000 and N in the millions is
+    # multiple GiB in one allocation.
+    test_loader = DataLoader(
+        TensorDataset(spatial_X_test, temporal_X_test),
+        batch_size=config["training"]["batch_size"],
+        shuffle=False,
+    )
     with torch.no_grad():
-        test_spatial = spatial_X_test.to(device)
-        test_temporal = temporal_X_test.to(device)
-        per_model_preds = torch.stack(
-            [model(test_spatial, test_temporal).cpu() for model in final_models]
-        )  # [num_models, N_test, 1]
+        per_model_preds_list = []
+        for model in final_models:
+            batch_preds = []
+            for batch_spatial, batch_temporal in test_loader:
+                batch_preds.append(
+                    model(batch_spatial.to(device), batch_temporal.to(device)).cpu()
+                )
+            per_model_preds_list.append(torch.cat(batch_preds, dim=0))
+        per_model_preds = torch.stack(per_model_preds_list)  # [num_models, N_test, 1]
 
     mean_pred = per_model_preds.mean(dim=0)
     var_pred = per_model_preds.var(dim=0)
@@ -414,10 +428,24 @@ if __name__ == "__main__":
     # data is z-scored using train-split mean/std; see normalization_stats).
     grid_temporal_X = torch.zeros(grid_spatial_X.shape[0], 1, device=device)
 
+    # Batched for the same reason as the test-set predictions above -- safe
+    # margin against future larger grid resolutions, even though the default
+    # 512x256 grid is small enough this wasn't the cause of any OOM so far.
+    grid_loader = DataLoader(
+        TensorDataset(grid_spatial_X.cpu(), grid_temporal_X.cpu()),
+        batch_size=config["training"]["batch_size"],
+        shuffle=False,
+    )
     with torch.no_grad():
-        grid_per_model_preds = torch.stack(
-            [model(grid_spatial_X, grid_temporal_X).cpu() for model in final_models]
-        )  # [num_models, N_grid, 1]
+        grid_per_model_preds_list = []
+        for model in final_models:
+            batch_preds = []
+            for batch_spatial, batch_temporal in grid_loader:
+                batch_preds.append(
+                    model(batch_spatial.to(device), batch_temporal.to(device)).cpu()
+                )
+            grid_per_model_preds_list.append(torch.cat(batch_preds, dim=0))
+        grid_per_model_preds = torch.stack(grid_per_model_preds_list)  # [num_models, N_grid, 1]
 
     grid_mean_pred = grid_per_model_preds.mean(dim=0).squeeze().reshape(_NUM_LONGS, _NUM_LATS)
     grid_var_pred = grid_per_model_preds.var(dim=0).squeeze().reshape(_NUM_LONGS, _NUM_LATS)
