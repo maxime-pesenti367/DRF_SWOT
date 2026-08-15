@@ -36,6 +36,7 @@ from copernicus_pipeline import (
     get_drive_base_path,
 )
 from data_splits import SPLIT_METHODS
+from display_tracks import display_1D_tracks
 
 SPATIAL_COLS = ["longitude", "latitude"]
 TEMPORAL_COL = "time"
@@ -92,6 +93,7 @@ def normalize_and_tensorize(train_df, val_df, test_df, split_config):
 def main():
     parser = argparse.ArgumentParser(description="Build split, normalized DRF tensor files from a data config")
     parser.add_argument("--config", type=str, required=True, help="Path to a data config YAML file")
+    parser.add_argument("--plot", action="store_true", help="Save a tracks/density overview PNG alongside the tensor files on Drive")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -110,7 +112,12 @@ def main():
     # store_tensors() doesn't create missing parent directories itself, so
     # this has to happen before calling it.
     drive_base, _ = get_drive_base_path()
-    (drive_base / "pytorch tensors" / config["name"]).mkdir(parents=True, exist_ok=True)
+    experiment_dir = drive_base / "pytorch tensors" / config["name"]
+    experiment_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.plot:
+        ds = combine_for_drf(data_dict, "xarray")
+        display_1D_tracks(ds, config["name"], save_path=experiment_dir / "tracks_overview.png")
 
     for split_config in config["splits"]:
         split_name = split_config["name"]

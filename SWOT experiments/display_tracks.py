@@ -52,7 +52,7 @@ def get_spatial_density(ds, grid_res_deg=1.0, heatmap_white_nan=False):
 # Display SSHA tracks from 1D altimeter
 # Graphs included: Spatial plot, time series, distribution
 # Note: ssha must be a xarray.DataArray, with coordinates: time, longitude, latitude. This can be done using assign_coords
-def display_1D_tracks(ssha, experiment_name, dot_size=5, vmax=0.2, outlier_threshold=5, include_nan=False, heatmap_res_deg=1, heatmap_white_nan=False):
+def display_1D_tracks(ssha, experiment_name, dot_size=5, vmax=0.2, outlier_threshold=5, include_nan=False, heatmap_res_deg=1, heatmap_white_nan=False, save_path=None):
 
     # Assign coordinates if not done already
     ssha = ssha['sla_filtered'].assign_coords(
@@ -149,7 +149,12 @@ def display_1D_tracks(ssha, experiment_name, dot_size=5, vmax=0.2, outlier_thres
 
 
     plt.tight_layout(rect=[0, 0, 1, 0.96])
-    plt.show()
+    if save_path is not None:
+        fig.savefig(save_path, dpi=200)
+        plt.close(fig)
+        print(f"Saved {save_path}")
+    else:
+        plt.show()
 
 
 
