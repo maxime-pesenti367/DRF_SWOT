@@ -46,6 +46,26 @@ pip install -e ./DeepRandomFeatures    # installs the `DRF` package (src/DRF) in
 
 `requirements.txt` pins `numpy==1.26.4` deliberately — `geomstats` (a `geometric_kernels` dependency) breaks on numpy 2.x (`ImportError: cannot import name 'trapz' from 'numpy'`, removed in numpy 2.0). This pin can silently drift: `copernicusmarine` has been observed to pull numpy forward past the pin on a later `pip install`/upgrade without anyone re-running `pip install -r requirements.txt` afterward. If `from DRF.models import ...` or similar starts failing with a numpy/geomstats import error, re-run `pip install -r requirements.txt` in the venv before debugging further — check `pip show numpy` first to confirm drift.
 
+### Fetching data needs a second, separate venv
+
+`copernicusmarine>=2.4.1` requires `numpy>=2.1.0` (confirmed via `pip install --dry-run`: *"copernicusmarine 2.4.1 depends on numpy>=2.1.0"*) — a hard conflict with the `numpy==1.26.4` pin above. You cannot have a working `copernicusmarine` and a working `geomstats`/DRF in the same venv. Versions of `copernicusmarine` old enough to coexist with `numpy==1.26.4` (e.g. 2.3.0) predate that package's support for downloading sparse/SQLite-backed datasets (several Copernicus altimetry products, including some at 1Hz) as NetCDF — `subset(file_format="netcdf")` fails on them with `WrongFormatRequested: Requested format 'netcdf' is not supported yet`.
+
+So: **`build_experiment_data.py` (and anything else importing `copernicus_pipeline.py`) needs to run from a different venv than the one used for `experiment_5.py`/DRF training.** Set it up once, outside this repo (so it's never confused with the training `venv/` or picked up by git):
+
+```bash
+python3 -m venv ../swot-fetch-env         # any location outside the repo works; an existing
+                                            # env named swot_env may already exist from earlier setup
+../swot-fetch-env/Scripts/activate         # Windows; `source .../bin/activate` elsewhere
+pip install -r requirements-fetch.txt
+```
+
+Then, from `SWOT experiments/`, with that venv activated instead of the main one:
+```bash
+python build_experiment_data.py --config configs/data/all_sats_1_day.yaml
+```
+
+`requirements-fetch.txt` intentionally has no numpy pin — letting `copernicusmarine` pull in whatever numpy it needs is the entire point of keeping this venv separate. `experiment_5.py`/`replot_grid.py` still run from the main `venv` as before — they only need `copernicus_pipeline.get_drive_base_path()` for path resolution, not the fetching functions themselves, so they're unaffected by which `copernicusmarine` version (if any) is installed there.
+
 Running an experiment (from `DeepRandomFeatures/`):
 ```bash
 python examples/experiment_1.py --config configs/example_config_exp1.yaml
@@ -56,9 +76,9 @@ python examples/experiment_3.py --config configs/example_config_exp3.yaml
 Running the SWOT-specific experiments (from `SWOT experiments/`):
 ```bash
 python experiment_4.py                                                              # legacy, hard-coded paths — see below
-python build_experiment_data.py --config configs/data/all_sats_1_day.yaml            # step 1: fetch + split + tensorize a dataset
-python experiment_5.py --config configs/exp5/exp_all_sats_1_day_random_shallow.yaml  # step 2: train/eval/checkpoint against it
-python replot_grid.py --results-dir results/exp_all_sats_1_day_random_shallow        # optional: regenerate grid plots from saved checkpoints, no retraining
+python build_experiment_data.py --config configs/data/all_sats_1_day.yaml            # step 1: fetch + split + tensorize a dataset -- separate fetch venv, see below
+python experiment_5.py --config configs/exp5/exp_all_sats_1_day_random_shallow.yaml  # step 2: train/eval/checkpoint against it -- main venv
+python replot_grid.py --results-dir results/exp_all_sats_1_day_random_shallow        # optional: regenerate grid plots from saved checkpoints, no retraining -- main venv
 ```
 `experiment_4.py`'s config path is resolved relative to the script via `Path(__file__)`, not the cwd. `experiment_5.py`/`build_experiment_data.py` resolve tensor paths dynamically via `get_drive_base_path()` (see Data section below), so they work unmodified across machines.
 
