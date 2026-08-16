@@ -25,15 +25,16 @@ import pandas as pd
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
-def _needs_symlog(values, ratio_threshold=50):
+def _needs_wide_range_scale(values, ratio_threshold=20):
     """Whether a column's actual values in this run span a wide enough
-    range to need symlog. Deciding this per-run from the real data (rather
-    than hardcoding it per-column) matters: final_loss/val_nlpd can span
-    many orders of magnitude in one run and be tightly clustered in
-    another (e.g. a 2-round search where both val_nlpd values land in the
-    500s) -- symlog's log-decade tick placement can leave the axis with
-    zero labeled ticks when the whole range sits inside one decade, so
-    forcing symlog on a narrow range makes the plot worse, not better."""
+    range to need a log-type y-axis. Deciding this per-run from the real
+    data (rather than hardcoding it per-column) matters: final_loss/
+    val_nlpd/train_loss can span many orders of magnitude in one run and
+    be tightly clustered in another (e.g. a 2-round search where both
+    val_nlpd values land in the 500s) -- log-decade tick placement can
+    leave the axis with zero labeled ticks when the whole range sits
+    inside one decade, so forcing a log scale on a narrow range makes the
+    plot worse, not better."""
     abs_vals = values.abs()
     nonzero = abs_vals[abs_vals > 1e-12]
     if len(nonzero) < 2:
@@ -82,7 +83,7 @@ def plot_search_progress(results_dir):
         # instead of every point but one being squashed flat near zero/one
         # dominant outlier. But only switch to it when *this run's* values
         # actually warrant it -- see _needs_symlog.
-        if _needs_symlog(df[col]):
+        if _needs_wide_range_scale(df[col]):
             ax.set_yscale("symlog")
 
     axes[0].legend()
@@ -114,9 +115,18 @@ def plot_training_curve(results_dir):
     ax_loss.set_ylabel("Huber loss")
     ax_loss.legend(fontsize=7, ncol=2)
     ax_loss.grid(alpha=0.3)
+    # Huber loss and RMSE are both non-negative, so a plain log scale (not
+    # symlog) works here -- unlike search_progress's val_nlpd, which can go
+    # negative. Late-training epochs often converge to losses clustered
+    # near zero across seeds, which a linear axis flattens into an
+    # indistinguishable line; log scale keeps that separation visible.
+    if _needs_wide_range_scale(pd.concat([df["train_loss"], df["val_loss"]])):
+        ax_loss.set_yscale("log")
     ax_rmse.set_ylabel("val RMSE")
     ax_rmse.set_xlabel("epoch")
     ax_rmse.grid(alpha=0.3)
+    if _needs_wide_range_scale(df["val_rmse"]):
+        ax_rmse.set_yscale("log")
     fig.suptitle("Final ensemble training curve (per seed)")
     fig.tight_layout()
     fig.savefig(results_dir / "training_curve.png", dpi=200)
