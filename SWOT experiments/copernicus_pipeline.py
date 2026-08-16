@@ -35,6 +35,10 @@ SATELLITE_DATASET_MAP = {
     "sentinel3a":  {
         "1hz": "cmems_obs-sl_glo_phy-ssh_nrt_s3a-l3-duacs_PT1S",
         "5hz": "cmems_obs-sl_glo_phy-ssh_nrt_s3a-l3-duacs_PT0.2S"
+    },
+    "sentinel3b":  {
+        "1hz": "cmems_obs-sl_glo_phy-ssh_nrt_s3b-l3-duacs_PT1S",
+        "5hz": "cmems_obs-sl_glo_phy-ssh_nrt_s3b-l3-duacs_PT0.2S"
     }
     # PLEASE ADD MORE AS NEEDED
 }
