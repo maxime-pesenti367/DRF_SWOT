@@ -1,0 +1,18 @@
+name: 3_sats_4_days_mar2026
+
+satellites:
+  - {name: sentinel3a, freq: 1hz}
+  - {name: sentinel3b, freq: 1hz}
+  - {name: cryosat2, freq: 1hz}
+
+start_date: "2026-03-02"
+end_date: "2026-03-04"
+variables: ["sla_filtered"]
+
+splits:
+  - name: random
+    method: random
+    train: 0.70
+    val: 0.15
+    test: 0.15
+    seed: 42
