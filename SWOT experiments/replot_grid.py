@@ -28,6 +28,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 _NUM_LONGS = 512
 _NUM_LATS = 256
 
+#_NUM_LONGS = 1024
+#_NUM_LATS = 512
 
 def to_float(x):
     return x.item() if torch.is_tensor(x) else x

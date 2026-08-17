@@ -413,8 +413,12 @@ if __name__ == "__main__":
     # Spatial inputs are raw radians here (never z-scored, unlike exp4), so
     # no normalization needs to be applied/reversed for the grid coordinates
     # either.
-    _NUM_LONGS = 512
-    _NUM_LATS = 256
+    
+    #_NUM_LONGS = 512
+    #_NUM_LATS = 256
+
+    _NUM_LONGS = 1024
+    _NUM_LATS = 512
     print("Building global grid for whole-globe snapshot...")
 
     grid_lons_deg = torch.linspace(-180, 180, _NUM_LONGS)
