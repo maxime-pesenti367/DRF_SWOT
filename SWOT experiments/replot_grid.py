@@ -36,8 +36,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 # see that file for the full rationale (matplotlib's default figure sizing
 # silently resamples the grid to fit a fixed pixel budget regardless of
 # _NUM_LONGS/_NUM_LATS, unless the map gets its own explicitly-sized axes).
-_NUM_LONGS = 2048
-_NUM_LATS = 1024
+_NUM_LONGS = 2880  # 0.125 deg/pixel: 360 / 0.125
+_NUM_LATS = 1440   # 0.125 deg/pixel: 180 / 0.125
 _GRID_DPI = 256
 _COLORBAR_HEIGHT_PX = 256  # legend space only, not pixel-critical
 _BORDER_PX = 32  # small uniform white margin around the whole saved image

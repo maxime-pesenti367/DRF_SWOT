@@ -46,12 +46,13 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 # actually buy more real detail in the saved PNG. _save_global_grid_plot
 # below instead gives the map its own explicitly-sized axes so every grid
 # cell maps to exactly one output pixel, no resampling.
-_NUM_LONGS = 2048
-_NUM_LATS = 1024
-# 256 so _NUM_LONGS/_GRID_DPI and _NUM_LATS/_GRID_DPI (and the colorbar
-# strip and border added below) are all exact integers -- avoids
-# inches<->pixel rounding nudging the map axes a fraction of a pixel off
-# its target footprint.
+_NUM_LONGS = 2880  # 0.125 deg/pixel: 360 / 0.125
+_NUM_LATS = 1440   # 0.125 deg/pixel: 180 / 0.125
+# 256 so _NUM_LONGS/_GRID_DPI, _NUM_LATS/_GRID_DPI, and the colorbar strip /
+# border added below all reduce to exact binary fractions (power-of-2
+# denominator, e.g. 1440/256 = 5.625 = 45/8) -- avoids inches<->pixel
+# rounding nudging the map axes a fraction of a pixel off its target
+# footprint, same as when this was 2048x1024.
 _GRID_DPI = 256
 _COLORBAR_HEIGHT_PX = 256  # legend space only, not pixel-critical
 _BORDER_PX = 32  # small uniform white margin around the whole saved image
