@@ -14,6 +14,7 @@ anything.
 
 import argparse
 import copy
+import math
 from pathlib import Path
 
 import cartopy.crs as ccrs
@@ -101,6 +102,27 @@ def _save_global_grid_plot(data_np, cmap, vmin, vmax, colorbar_label, save_path)
     fig.colorbar(im, cax=cax, orientation="horizontal", label=colorbar_label)
     fig.savefig(save_path, dpi=_GRID_DPI)
     plt.close(fig)
+
+
+def _round_sig(x, sig=6):
+    """Rounds to `sig` significant figures rather than decimal places.
+    Appropriate for the CSVs this feeds -- they mix wildly different
+    magnitudes in the same table (e.g. spatial_lengthscale down around 1e-5
+    alongside val_nlpd in the hundreds), where a fixed round(x, ndigits)
+    would zero out the small values while being needlessly verbose for the
+    large ones."""
+    if x == 0 or not math.isfinite(x):
+        return x
+    return round(x, -int(math.floor(math.log10(abs(x)))) + (sig - 1))
+
+
+def _round_df_sig_figs(df, sig=6):
+    """Applies _round_sig to every numeric column of df; non-numeric columns
+    (e.g. round_type, is_winner) pass through untouched."""
+    df = df.copy()
+    for col in df.select_dtypes(include="number").columns:
+        df[col] = df[col].apply(lambda x: _round_sig(x, sig))
+    return df
 
 
 def train_final_model(
@@ -503,6 +525,19 @@ if __name__ == "__main__":
     print(f"Test-set NLPD: {nlpd:.4f}")
     print(f"Test-set CRPS: {crps:.4f}")
 
+    # Bias / variance-of-difference decomposition of RMSE -- same validation
+    # metrics DUACS L4 products report against independent along-track/
+    # in-situ observations, so this puts DRF's test-set accuracy on the same
+    # footing as that standard. test_rmse**2 ~= test_bias**2 +
+    # test_variance_of_diff (exact only for population variance; torch's
+    # default unbiased estimator differs by a factor of N/(N-1), negligible
+    # for these test set sizes).
+    residuals = mean_pred - y_test
+    test_bias = residuals.mean().item()
+    test_variance_of_diff = residuals.var().item()
+    print(f"Test-set bias: {test_bias:.4f}")
+    print(f"Test-set variance of diff: {test_variance_of_diff:.4f}")
+
     # --- Output paths, auto-derived from the config filename ---
     # Never hand-typed in the config itself — removes the copy-paste-bug
     # class already hit twice with exp3/exp4's configs (missing
@@ -511,16 +546,19 @@ if __name__ == "__main__":
     results_dir.mkdir(parents=True, exist_ok=True)
 
     results_df = pd.DataFrame([{
-        "spatial_lengthscale": round(spatial_lengthscale.item(), 4),
-        "temporal_lengthscale": round(temporal_lengthscale.item(), 4),
-        "amplitude": round(amplitude.item(), 4),
-        "lengthscale2": round(lengthscale2.item(), 4),
-        "amplitude2": round(amplitude2.item(), 4),
-        "best_val_loss": round(best_loss_value, 4),
-        "test_rmse": round(rmse, 4),
-        "test_nlpd": round(nlpd, 4),
-        "test_crps": round(crps, 4),
+        "spatial_lengthscale": spatial_lengthscale.item(),
+        "temporal_lengthscale": temporal_lengthscale.item(),
+        "amplitude": amplitude.item(),
+        "lengthscale2": lengthscale2.item(),
+        "amplitude2": amplitude2.item(),
+        "best_val_loss": best_loss_value,
+        "test_rmse": rmse,
+        "test_nlpd": nlpd,
+        "test_crps": crps,
+        "test_bias": test_bias,
+        "test_variance_of_diff": test_variance_of_diff,
     }])
+    results_df = _round_df_sig_figs(results_df)
     results_df.to_csv(results_dir / "results.csv", index=False)
 
     # --- Search history: every BO candidate tried, not just the winner ---
@@ -537,13 +575,17 @@ if __name__ == "__main__":
     search_history_df["is_winner"] = (
         search_history_df["final_loss"] == search_history_df["final_loss"].min()
     )
+    # is_winner is computed above from the full-precision final_loss values,
+    # so rounding for display afterward doesn't affect which round it picks.
+    search_history_df = _round_df_sig_figs(search_history_df)
     search_history_df.to_csv(results_dir / "search_history.csv", index=False)
 
     # --- Per-epoch train/val loss for the actual final ensemble ---
     # Previously untracked entirely -- these are the models whose weights
     # get checkpointed and used going forward, unlike the throwaway
     # BO-search-phase models above.
-    pd.DataFrame(training_curve_records).to_csv(results_dir / "training_curve.csv", index=False)
+    training_curve_df = _round_df_sig_figs(pd.DataFrame(training_curve_records))
+    training_curve_df.to_csv(results_dir / "training_curve.csv", index=False)
 
     torch.save(mean_pred, results_dir / "final_predictions.pt")
     torch.save(var_pred, results_dir / "final_variance.pt")
