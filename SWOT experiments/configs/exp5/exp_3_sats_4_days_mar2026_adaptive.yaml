@@ -46,3 +46,9 @@ training:
   # you land on a GPU with enough headroom to go faster.
   max_parallel_models: 5
   p_weight: 0.95
+  early_stopping:
+    patience: 3
+  lr_scheduler:
+    type: cosine
+  gradient_clipping:
+    max_norm: 1.0
