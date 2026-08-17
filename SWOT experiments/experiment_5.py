@@ -34,6 +34,72 @@ from plot_search_history import plot_search_progress, plot_training_curve
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
+# Whole-globe grid snapshot resolution + figure sizing, shared by the
+# final_mean.png/final_variance.png plots below. Matplotlib's default figure
+# sizing (a fixed inches x dpi canvas, map axes auto-shrunk by
+# fig.colorbar(ax=...) to share space with the colorbar) silently
+# downsamples/blends the underlying grid to whatever pixel budget the
+# canvas happens to have -- so bumping _NUM_LONGS/_NUM_LATS alone doesn't
+# actually buy more real detail in the saved PNG. _save_global_grid_plot
+# below instead gives the map its own explicitly-sized axes so every grid
+# cell maps to exactly one output pixel, no resampling.
+_NUM_LONGS = 2048
+_NUM_LATS = 1024
+# 256 so _NUM_LONGS/_GRID_DPI and _NUM_LATS/_GRID_DPI (and the colorbar
+# strip and border added below) are all exact integers -- avoids
+# inches<->pixel rounding nudging the map axes a fraction of a pixel off
+# its target footprint.
+_GRID_DPI = 256
+_COLORBAR_HEIGHT_PX = 256  # legend space only, not pixel-critical
+_BORDER_PX = 32  # small uniform white margin around the whole saved image
+
+_TOTAL_WIDTH_PX = _NUM_LONGS + 2 * _BORDER_PX
+_TOTAL_HEIGHT_PX = _NUM_LATS + _COLORBAR_HEIGHT_PX + 2 * _BORDER_PX
+_FIG_WIDTH_IN = _TOTAL_WIDTH_PX / _GRID_DPI
+_FIG_HEIGHT_IN = _TOTAL_HEIGHT_PX / _GRID_DPI
+
+
+def _save_global_grid_plot(data_np, cmap, vmin, vmax, colorbar_label, save_path):
+    """Saves a whole-globe grid snapshot with the map rendered at exactly
+    _NUM_LONGS x _NUM_LATS pixels -- no interpolation/resampling -- inset by
+    a uniform _BORDER_PX white margin on all four sides of the saved image.
+    The map gets its own explicitly-sized axes, positioned by exact pixel
+    offsets into the full canvas, instead of matplotlib's default
+    auto-layout, which shrinks the axes to make room for the colorbar and
+    resamples the data to whatever pixel footprint is left over."""
+    fig = plt.figure(figsize=(_FIG_WIDTH_IN, _FIG_HEIGHT_IN), dpi=_GRID_DPI)
+    map_left = _BORDER_PX / _TOTAL_WIDTH_PX
+    map_width = _NUM_LONGS / _TOTAL_WIDTH_PX
+    map_bottom = (_BORDER_PX + _COLORBAR_HEIGHT_PX) / _TOTAL_HEIGHT_PX
+    map_height = _NUM_LATS / _TOTAL_HEIGHT_PX
+    ax = fig.add_axes(
+        [map_left, map_bottom, map_width, map_height],
+        projection=ccrs.PlateCarree(central_longitude=0),
+    )
+    ax.set_extent([-180, 180, -90, 90], crs=ccrs.PlateCarree())
+    im = ax.imshow(
+        data_np,
+        origin="lower",
+        cmap=cmap,
+        extent=[-180, 180, -90, 90],
+        transform=ccrs.PlateCarree(),
+        vmin=vmin,
+        vmax=vmax,
+        interpolation="none",
+    )
+    ax.coastlines()
+    ax.add_feature(cfeature.BORDERS, linestyle=":")
+    # Colorbar sits in the border-to-map gap below -- not pixel-critical,
+    # so centered with generous margins rather than exactly positioned.
+    cax_left = map_left + 0.15 * map_width
+    cax_width = 0.7 * map_width
+    cax_bottom = _BORDER_PX / _TOTAL_HEIGHT_PX + 0.35 * (_COLORBAR_HEIGHT_PX / _TOTAL_HEIGHT_PX)
+    cax_height = 0.3 * (_COLORBAR_HEIGHT_PX / _TOTAL_HEIGHT_PX)
+    cax = fig.add_axes([cax_left, cax_bottom, cax_width, cax_height])
+    fig.colorbar(im, cax=cax, orientation="horizontal", label=colorbar_label)
+    fig.savefig(save_path, dpi=_GRID_DPI)
+    plt.close(fig)
+
 
 def train_final_model(
     model_class,
@@ -413,12 +479,6 @@ if __name__ == "__main__":
     # Spatial inputs are raw radians here (never z-scored, unlike exp4), so
     # no normalization needs to be applied/reversed for the grid coordinates
     # either.
-    
-    #_NUM_LONGS = 512
-    #_NUM_LATS = 256
-
-    _NUM_LONGS = 1024
-    _NUM_LATS = 512
     print("Building global grid for whole-globe snapshot...")
 
     grid_lons_deg = torch.linspace(-180, 180, _NUM_LONGS)
@@ -455,37 +515,14 @@ if __name__ == "__main__":
     grid_var_pred = grid_per_model_preds.var(dim=0).squeeze().reshape(_NUM_LONGS, _NUM_LATS)
     print("Global grid predictions computed.")
 
-    fig, ax = plt.subplots(subplot_kw={"projection": ccrs.PlateCarree(central_longitude=0)})
-    mean_plot = ax.imshow(
-        grid_mean_pred.T.numpy(),
-        origin="lower",
-        cmap="coolwarm",
-        extent=[-180, 180, -90, 90],
-        transform=ccrs.PlateCarree(),
-        vmin=-0.25,
-        vmax=0.25,
+    _save_global_grid_plot(
+        grid_mean_pred.T.numpy(), cmap="coolwarm", vmin=-0.25, vmax=0.25,
+        colorbar_label="Predicted SLA (m)", save_path=results_dir / "final_mean.png",
     )
-    ax.coastlines()
-    ax.add_feature(cfeature.BORDERS, linestyle=":")
-    plt.colorbar(mean_plot, ax=ax, orientation="horizontal", pad=0.05, label="Predicted SLA (m)")
-    plt.savefig(results_dir / "final_mean.png", dpi=300)
-    plt.close(fig)
-
-    fig, ax = plt.subplots(subplot_kw={"projection": ccrs.PlateCarree(central_longitude=0)})
-    var_plot = ax.imshow(
-        grid_var_pred.T.numpy(),
-        origin="lower",
-        cmap="viridis",
-        extent=[-180, 180, -90, 90],
-        transform=ccrs.PlateCarree(),
-        vmin=0,
-        vmax=0.2,
+    _save_global_grid_plot(
+        grid_var_pred.T.numpy(), cmap="viridis", vmin=0, vmax=0.2,
+        colorbar_label="Variance", save_path=results_dir / "final_variance.png",
     )
-    ax.coastlines()
-    ax.add_feature(cfeature.BORDERS, linestyle=":")
-    plt.colorbar(var_plot, ax=ax, orientation="horizontal", pad=0.05, label="Variance")
-    plt.savefig(results_dir / "final_variance.png", dpi=300)
-    plt.close(fig)
 
     # --- Search-progress / training-curve plots ---
     # Regenerable later without retraining via

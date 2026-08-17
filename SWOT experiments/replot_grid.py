@@ -19,17 +19,71 @@ import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import matplotlib.pyplot as plt
 import torch
+from torch.utils.data import DataLoader, TensorDataset
 
 from DRF.models import DeepMaternRandomPhaseS2RFFNN
 from model_io import load_checkpoint
 
+# Matches the batch size used for grid/test predictions elsewhere in this
+# codebase (e.g. train_model_process's grid_loader). Unbatched forward
+# passes over the full grid worked fine at the old 512x256 resolution but
+# OOM at 2048x1024 (~2.1M points in one shot) on an 8GB GPU.
+_GRID_BATCH_SIZE = 8000
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-_NUM_LONGS = 512
-_NUM_LATS = 256
+# Kept in sync with experiment_5.py's copy of these same constants/helper --
+# see that file for the full rationale (matplotlib's default figure sizing
+# silently resamples the grid to fit a fixed pixel budget regardless of
+# _NUM_LONGS/_NUM_LATS, unless the map gets its own explicitly-sized axes).
+_NUM_LONGS = 2048
+_NUM_LATS = 1024
+_GRID_DPI = 256
+_COLORBAR_HEIGHT_PX = 256  # legend space only, not pixel-critical
+_BORDER_PX = 32  # small uniform white margin around the whole saved image
 
-#_NUM_LONGS = 1024
-#_NUM_LATS = 512
+_TOTAL_WIDTH_PX = _NUM_LONGS + 2 * _BORDER_PX
+_TOTAL_HEIGHT_PX = _NUM_LATS + _COLORBAR_HEIGHT_PX + 2 * _BORDER_PX
+_FIG_WIDTH_IN = _TOTAL_WIDTH_PX / _GRID_DPI
+_FIG_HEIGHT_IN = _TOTAL_HEIGHT_PX / _GRID_DPI
+
+
+def _save_global_grid_plot(data_np, cmap, vmin, vmax, colorbar_label, save_path):
+    """Saves a whole-globe grid snapshot with the map rendered at exactly
+    _NUM_LONGS x _NUM_LATS pixels -- no interpolation/resampling -- inset by
+    a uniform _BORDER_PX white margin on all four sides. See experiment_5.py's
+    copy of this function for the full rationale."""
+    fig = plt.figure(figsize=(_FIG_WIDTH_IN, _FIG_HEIGHT_IN), dpi=_GRID_DPI)
+    map_left = _BORDER_PX / _TOTAL_WIDTH_PX
+    map_width = _NUM_LONGS / _TOTAL_WIDTH_PX
+    map_bottom = (_BORDER_PX + _COLORBAR_HEIGHT_PX) / _TOTAL_HEIGHT_PX
+    map_height = _NUM_LATS / _TOTAL_HEIGHT_PX
+    ax = fig.add_axes(
+        [map_left, map_bottom, map_width, map_height],
+        projection=ccrs.PlateCarree(central_longitude=0),
+    )
+    ax.set_extent([-180, 180, -90, 90], crs=ccrs.PlateCarree())
+    im = ax.imshow(
+        data_np,
+        origin="lower",
+        cmap=cmap,
+        extent=[-180, 180, -90, 90],
+        transform=ccrs.PlateCarree(),
+        vmin=vmin,
+        vmax=vmax,
+        interpolation="none",
+    )
+    ax.coastlines()
+    ax.add_feature(cfeature.BORDERS, linestyle=":")
+    cax_left = map_left + 0.15 * map_width
+    cax_width = 0.7 * map_width
+    cax_bottom = _BORDER_PX / _TOTAL_HEIGHT_PX + 0.35 * (_COLORBAR_HEIGHT_PX / _TOTAL_HEIGHT_PX)
+    cax_height = 0.3 * (_COLORBAR_HEIGHT_PX / _TOTAL_HEIGHT_PX)
+    cax = fig.add_axes([cax_left, cax_bottom, cax_width, cax_height])
+    fig.colorbar(im, cax=cax, orientation="horizontal", label=colorbar_label)
+    fig.savefig(save_path, dpi=_GRID_DPI)
+    plt.close(fig)
+
 
 def to_float(x):
     return x.item() if torch.is_tensor(x) else x
@@ -110,49 +164,37 @@ if __name__ == "__main__":
     grid_spatial_X = torch.stack(
         [torch.deg2rad(grid_lon_grid.reshape(-1)), torch.deg2rad(grid_lat_grid.reshape(-1))],
         dim=1,
-    ).to(device)
+    )
     # Normalized time = 0.0 -> the training set's mean timestamp.
-    grid_temporal_X = torch.zeros(grid_spatial_X.shape[0], 1, device=device)
+    grid_temporal_X = torch.zeros(grid_spatial_X.shape[0], 1)
 
+    grid_loader = DataLoader(
+        TensorDataset(grid_spatial_X, grid_temporal_X),
+        batch_size=_GRID_BATCH_SIZE,
+        shuffle=False,
+    )
     with torch.no_grad():
-        grid_per_model_preds = torch.stack(
-            [model(grid_spatial_X, grid_temporal_X).cpu() for model in final_models]
-        )  # [num_models, N_grid, 1]
+        grid_per_model_preds_list = []
+        for model in final_models:
+            batch_preds = []
+            for batch_spatial, batch_temporal in grid_loader:
+                batch_preds.append(
+                    model(batch_spatial.to(device), batch_temporal.to(device)).cpu()
+                )
+            grid_per_model_preds_list.append(torch.cat(batch_preds, dim=0))
+        grid_per_model_preds = torch.stack(grid_per_model_preds_list)  # [num_models, N_grid, 1]
 
     grid_mean_pred = grid_per_model_preds.mean(dim=0).squeeze().reshape(_NUM_LONGS, _NUM_LATS)
     grid_var_pred = grid_per_model_preds.var(dim=0).squeeze().reshape(_NUM_LONGS, _NUM_LATS)
     print("Global grid predictions computed.")
 
-    fig, ax = plt.subplots(subplot_kw={"projection": ccrs.PlateCarree(central_longitude=0)})
-    mean_plot = ax.imshow(
-        grid_mean_pred.T.numpy(),
-        origin="lower",
-        cmap="coolwarm",
-        extent=[-180, 180, -90, 90],
-        transform=ccrs.PlateCarree(),
-        vmin=-0.25,
-        vmax=0.25,
+    _save_global_grid_plot(
+        grid_mean_pred.T.numpy(), cmap="coolwarm", vmin=-0.25, vmax=0.25,
+        colorbar_label="Predicted SLA (m)", save_path=results_dir / "final_mean.png",
     )
-    ax.coastlines()
-    ax.add_feature(cfeature.BORDERS, linestyle=":")
-    plt.colorbar(mean_plot, ax=ax, orientation="horizontal", pad=0.05, label="Predicted SLA (m)")
-    plt.savefig(results_dir / "final_mean.png", dpi=300)
-    plt.close(fig)
-
-    fig, ax = plt.subplots(subplot_kw={"projection": ccrs.PlateCarree(central_longitude=0)})
-    var_plot = ax.imshow(
-        grid_var_pred.T.numpy(),
-        origin="lower",
-        cmap="viridis",
-        extent=[-180, 180, -90, 90],
-        transform=ccrs.PlateCarree(),
-        vmin=0,
-        vmax=0.2,
+    _save_global_grid_plot(
+        grid_var_pred.T.numpy(), cmap="viridis", vmin=0, vmax=0.2,
+        colorbar_label="Variance", save_path=results_dir / "final_variance.png",
     )
-    ax.coastlines()
-    ax.add_feature(cfeature.BORDERS, linestyle=":")
-    plt.colorbar(var_plot, ax=ax, orientation="horizontal", pad=0.05, label="Variance")
-    plt.savefig(results_dir / "final_variance.png", dpi=300)
-    plt.close(fig)
 
     print(f"Regenerated final_mean.png and final_variance.png in {results_dir}")
