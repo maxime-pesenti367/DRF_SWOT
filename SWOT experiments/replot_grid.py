@@ -55,6 +55,16 @@ def load_ensemble(checkpoints_dir, device):
             amplitude2,
         ) = checkpoint["hyperparameters"]
 
+        # MaternRandomPhaseS2RFFLayer's random spherical basis (noise/levels
+        # in RandomPhaseFeatureMap) is sampled fresh at construction time and
+        # is NOT part of state_dict (RandomPhaseFeatureMap isn't an
+        # nn.Module, so nothing in it gets registered as a parameter/buffer).
+        # Re-seeding with the checkpoint's own saved seed before
+        # constructing the model reproduces the exact basis the saved
+        # output_layer weights were actually trained against -- without
+        # this, each reconstruction gets an unrelated random basis and the
+        # loaded weights are combined with the wrong features.
+        torch.manual_seed(checkpoint["seed"])
         model = DeepMaternRandomPhaseS2RFFNN(
             **checkpoint["model_config"],
             spatial_lengthscale=to_float(spatial_lengthscale),
