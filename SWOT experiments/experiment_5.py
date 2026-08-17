@@ -15,6 +15,7 @@ anything.
 import argparse
 import copy
 import math
+import shutil
 from pathlib import Path
 
 import cartopy.crs as ccrs
@@ -298,6 +299,183 @@ def train_final_model(
     return model, epoch_history
 
 
+def _retrain_and_save_candidate(
+    hyperparams,
+    criterion_label,
+    results_dir,
+    config,
+    model_config,
+    train_dataset,
+    val_dataset,
+    spatial_X_test,
+    temporal_X_test,
+    y_test,
+    normalization_stats,
+    device,
+    early_stopping_patience,
+    lr_scheduler_config,
+    gradient_clip_max_norm,
+):
+    """Retrains config['training']['num_models'] fresh models on
+    `hyperparams`, scores them against the real held-out test set, and saves
+    everything (checkpoints, predictions, training curve, whole-globe grid
+    plots) into results_dir/<criterion_label>/. Returns a dict of that
+    candidate's metrics for the shared results.csv row.
+
+    Pulled out of main() so it can run once per selected BO candidate --
+    previously there was always exactly one (the final_loss winner); now
+    main() calls this for each of the final_loss winner and val_rmse winner
+    (or just once if they're the same round -- see main()'s same_winner
+    check)."""
+    candidate_dir = results_dir / criterion_label
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+
+    num_models = config["training"]["num_models"]
+    final_models = []
+    training_curve_records = []
+    for seed in range(num_models):
+        model, epoch_history = train_final_model(
+            model_class=DeepMaternRandomPhaseS2RFFNN,
+            train_data=train_dataset,
+            val_data=val_dataset,
+            hyperparams=hyperparams,
+            seed=seed,
+            device=device,
+            n_epochs=config["training"]["num_epochs"],
+            batch_size=config["training"]["batch_size"],
+            early_stopping_patience=early_stopping_patience,
+            lr_scheduler_config=lr_scheduler_config,
+            gradient_clip_max_norm=gradient_clip_max_norm,
+            **model_config,
+        )
+        final_models.append(model)
+        training_curve_records.extend(epoch_history)
+
+    # --- Predict on the REAL held-out test set with this candidate's ensemble ---
+    # Batched (not one giant forward pass) -- large test sets (e.g. exp3's
+    # ~1.2M-row test split) blow up GPU memory otherwise: the spherical
+    # layer's RandomPhaseFeatureMap materializes a (hidden_dim, N) tensor
+    # internally, which for hidden_dim=1000 and N in the millions is
+    # multiple GiB in one allocation.
+    test_loader = DataLoader(
+        TensorDataset(spatial_X_test, temporal_X_test),
+        batch_size=config["training"]["batch_size"],
+        shuffle=False,
+    )
+    with torch.no_grad():
+        per_model_preds_list = []
+        for model in final_models:
+            batch_preds = []
+            for batch_spatial, batch_temporal in test_loader:
+                batch_preds.append(
+                    model(batch_spatial.to(device), batch_temporal.to(device)).cpu()
+                )
+            per_model_preds_list.append(torch.cat(batch_preds, dim=0))
+        per_model_preds = torch.stack(per_model_preds_list)  # [num_models, N_test, 1]
+
+    mean_pred = per_model_preds.mean(dim=0)
+    var_pred = per_model_preds.var(dim=0)
+
+    rmse = compute_rmse(mean_pred, y_test)
+    nlpd = compute_nlpd(mean_pred, var_pred, y_test)
+    crps = compute_crps(mean_pred, var_pred, y_test)
+    residuals = mean_pred - y_test
+    test_bias = residuals.mean().item()
+    test_variance_of_diff = residuals.var().item()
+    print(
+        f"[{criterion_label}] Test-set RMSE: {rmse:.4f}  NLPD: {nlpd:.4f}  "
+        f"CRPS: {crps:.4f}  bias: {test_bias:.4f}  variance_of_diff: {test_variance_of_diff:.4f}"
+    )
+
+    training_curve_df = _round_df_sig_figs(pd.DataFrame(training_curve_records))
+    training_curve_df.to_csv(candidate_dir / "training_curve.csv", index=False)
+
+    torch.save(mean_pred, candidate_dir / "final_predictions.pt")
+    torch.save(var_pred, candidate_dir / "final_variance.pt")
+    torch.save(per_model_preds, candidate_dir / "individual_final_predictions.pt")
+
+    for seed, model in enumerate(final_models):
+        save_checkpoint(
+            path=candidate_dir / "checkpoints" / f"model_{seed}.pt",
+            state_dict=model.state_dict(),
+            model_config=model_config,
+            hyperparameters=hyperparams,
+            norm_stats=normalization_stats,
+            seed=seed,
+        )
+
+    # --- Whole-globe grid snapshot ---
+    # Dense global grid + imshow, matching exp3/exp4's whole-globe snapshot
+    # style rather than scattering over the sparse real test-set points --
+    # judged more informative for visualizing overall model behaviour, with
+    # real accuracy (RMSE/NLPD/CRPS above) already handled separately against
+    # the genuine held-out test set. No retrain needed here: final_models are
+    # already in memory (and checkpointed to disk above), so we just
+    # forward-pass those over the grid. Spatial inputs are raw radians here
+    # (never z-scored), so no normalization needs to be applied/reversed for
+    # the grid coordinates either.
+    print(f"[{criterion_label}] Building global grid for whole-globe snapshot...")
+    grid_lons_deg = torch.linspace(-180, 180, _NUM_LONGS)
+    grid_lats_deg = torch.linspace(-90, 90, _NUM_LATS)
+    grid_lon_grid, grid_lat_grid = torch.meshgrid(grid_lons_deg, grid_lats_deg, indexing="ij")
+    grid_spatial_X = torch.stack(
+        [torch.deg2rad(grid_lon_grid.reshape(-1)), torch.deg2rad(grid_lat_grid.reshape(-1))],
+        dim=1,
+    ).to(device)
+    # Normalized time = 0.0 -> the training set's mean timestamp (temporal
+    # data is z-scored using train-split mean/std; see normalization_stats).
+    grid_temporal_X = torch.zeros(grid_spatial_X.shape[0], 1, device=device)
+
+    grid_loader = DataLoader(
+        TensorDataset(grid_spatial_X.cpu(), grid_temporal_X.cpu()),
+        batch_size=config["training"]["batch_size"],
+        shuffle=False,
+    )
+    with torch.no_grad():
+        grid_per_model_preds_list = []
+        for model in final_models:
+            batch_preds = []
+            for batch_spatial, batch_temporal in grid_loader:
+                batch_preds.append(
+                    model(batch_spatial.to(device), batch_temporal.to(device)).cpu()
+                )
+            grid_per_model_preds_list.append(torch.cat(batch_preds, dim=0))
+        grid_per_model_preds = torch.stack(grid_per_model_preds_list)  # [num_models, N_grid, 1]
+
+    grid_mean_pred = grid_per_model_preds.mean(dim=0).squeeze().reshape(_NUM_LONGS, _NUM_LATS)
+    grid_var_pred = grid_per_model_preds.var(dim=0).squeeze().reshape(_NUM_LONGS, _NUM_LATS)
+    print(f"[{criterion_label}] Global grid predictions computed.")
+
+    _save_global_grid_plot(
+        grid_mean_pred.T.numpy(), cmap="coolwarm", vmin=-0.25, vmax=0.25,
+        colorbar_label="Predicted SLA (m)", save_path=candidate_dir / "final_mean.png",
+    )
+    _save_global_grid_plot(
+        grid_var_pred.T.numpy(), cmap="viridis", vmin=0, vmax=0.2,
+        colorbar_label="Variance", save_path=candidate_dir / "final_variance.png",
+    )
+
+    plot_training_curve(candidate_dir)
+
+    def to_float(x):
+        return x.item() if torch.is_tensor(x) else x
+
+    spatial_lengthscale, temporal_lengthscale, amplitude, lengthscale2, amplitude2 = hyperparams
+    return {
+        "selection_criterion": criterion_label,
+        "spatial_lengthscale": to_float(spatial_lengthscale),
+        "temporal_lengthscale": to_float(temporal_lengthscale),
+        "amplitude": to_float(amplitude),
+        "lengthscale2": to_float(lengthscale2),
+        "amplitude2": to_float(amplitude2),
+        "test_rmse": rmse,
+        "test_nlpd": nlpd,
+        "test_crps": crps,
+        "test_bias": test_bias,
+        "test_variance_of_diff": test_variance_of_diff,
+    }
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train and evaluate a spherical DRF model (exp5)")
     parser.add_argument("--config", type=str, required=True, help="Path to a model/training config YAML file")
@@ -439,26 +617,52 @@ if __name__ == "__main__":
     else:
         optimizer = SphericalBayesianOptimizer(**optimizer_kwargs)
 
-    best_hyperparams, best_loss = optimizer.optimize(
-        n_iterations=config["bayesian_optimization"]["n_iterations"]
+    optimizer.optimize(n_iterations=config["bayesian_optimization"]["n_iterations"])
+
+    # --- Select candidates: lowest final_loss (the actual BO objective) and
+    # lowest val_rmse (pure point-accuracy, ignoring the regularization term
+    # final_loss also weighs in at p_weight=0.95) -- these don't always
+    # agree. Both get retrained and saved; if the same round happens to win
+    # both (common with small search budgets), only retrain it once.
+    search_history_list = optimizer.search_history
+    final_loss_winner_idx = min(
+        range(len(search_history_list)), key=lambda i: search_history_list[i]["final_loss"]
     )
+    val_rmse_winner_idx = min(
+        range(len(search_history_list)), key=lambda i: search_history_list[i]["val_rmse"]
+    )
+    same_winner = final_loss_winner_idx == val_rmse_winner_idx
 
-    spatial_lengthscale, temporal_lengthscale, amplitude, lengthscale2, amplitude2 = best_hyperparams
-    best_loss_value = best_loss.item() if torch.is_tensor(best_loss) else best_loss
-    print("Best hyperparameters:")
-    print(f"  spatial_lengthscale = {spatial_lengthscale.item()}")
-    print(f"  temporal_lengthscale = {temporal_lengthscale.item()}")
-    print(f"  amplitude = {amplitude.item()}")
-    print(f"  lengthscale2 = {lengthscale2.item()}")
-    print(f"  amplitude2 = {amplitude2.item()}")
-    print(f"Best validation loss: {best_loss_value}")
+    def _hyperparams_from_round(round_idx):
+        row = search_history_list[round_idx]
+        return (
+            row["spatial_lengthscale"],
+            row["temporal_lengthscale"],
+            row["amplitude"],
+            row["lengthscale2"],
+            row["amplitude2"],
+        )
 
-    # --- Final retrain ---
-    # No experiment in this codebase saves trained weights, so getting an
-    # actual (state_dict, predictions) pair for the winning hyperparameters
-    # means retraining once more with them.
-    print("Retraining final ensemble with winning hyperparameters (to obtain saveable weights)...")
-    num_models = config["training"]["num_models"]
+    if same_winner:
+        candidates = [("final_loss_and_val_rmse_winner", final_loss_winner_idx)]
+        print(f"Round {final_loss_winner_idx} won both final_loss and val_rmse -- one candidate to retrain.")
+    else:
+        candidates = [
+            ("final_loss_winner", final_loss_winner_idx),
+            ("val_rmse_winner", val_rmse_winner_idx),
+        ]
+        print(
+            f"final_loss winner: round {final_loss_winner_idx}  |  "
+            f"val_rmse winner: round {val_rmse_winner_idx}"
+        )
+
+    # --- Output paths, auto-derived from the config filename ---
+    # Never hand-typed in the config itself — removes the copy-paste-bug
+    # class already hit twice with exp3/exp4's configs (missing
+    # plot_mean_filename, mistyped tensor path).
+    results_dir = SCRIPT_DIR / "results" / config_path.stem
+    results_dir.mkdir(parents=True, exist_ok=True)
+
     model_config = dict(
         num_layers=config["model"]["num_layers"],
         spatial_input_dim=3,
@@ -471,202 +675,90 @@ if __name__ == "__main__":
         combine_type=combine_type,
     )
 
-    final_models = []
-    training_curve_records = []
-    for seed in range(num_models):
-        model, epoch_history = train_final_model(
-            model_class=DeepMaternRandomPhaseS2RFFNN,
-            train_data=train_dataset,
-            val_data=val_dataset,
-            hyperparams=best_hyperparams,
-            seed=seed,
+    # --- Final retrain(s) ---
+    # No experiment in this codebase saves trained weights, so getting an
+    # actual (state_dict, predictions) pair for a winning hyperparameter set
+    # means retraining once more with it -- once per candidate selected above.
+    results_rows = []
+    for criterion_label, round_idx in candidates:
+        hyperparams = _hyperparams_from_round(round_idx)
+        row = search_history_list[round_idx]
+        print(f"--- Retraining final ensemble for {criterion_label} (round {round_idx}) ---")
+        print(f"  spatial_lengthscale = {hyperparams[0]}")
+        print(f"  temporal_lengthscale = {hyperparams[1]}")
+        print(f"  amplitude = {hyperparams[2]}")
+        print(f"  lengthscale2 = {hyperparams[3]}")
+        print(f"  amplitude2 = {hyperparams[4]}")
+        print(f"  final_loss (this round) = {row['final_loss']}")
+        print(f"  val_rmse (this round) = {row['val_rmse']}")
+
+        metrics = _retrain_and_save_candidate(
+            hyperparams=hyperparams,
+            criterion_label=criterion_label,
+            results_dir=results_dir,
+            config=config,
+            model_config=model_config,
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
+            spatial_X_test=spatial_X_test,
+            temporal_X_test=temporal_X_test,
+            y_test=y_test,
+            normalization_stats=data["normalization_stats"],
             device=device,
-            n_epochs=config["training"]["num_epochs"],
-            batch_size=config["training"]["batch_size"],
             early_stopping_patience=early_stopping_patience,
             lr_scheduler_config=lr_scheduler_config,
             gradient_clip_max_norm=gradient_clip_max_norm,
-            **model_config,
         )
-        final_models.append(model)
-        training_curve_records.extend(epoch_history)
+        metrics["best_val_loss"] = row["final_loss"]
+        metrics["search_val_rmse"] = row["val_rmse"]
+        results_rows.append(metrics)
 
-    # --- Predict on the REAL held-out test set with the final ensemble ---
-    # Batched (not one giant forward pass) -- large test sets (e.g. exp3's
-    # ~1.2M-row test split) blow up GPU memory otherwise: the spherical
-    # layer's RandomPhaseFeatureMap materializes a (hidden_dim, N) tensor
-    # internally, which for hidden_dim=1000 and N in the millions is
-    # multiple GiB in one allocation.
-    test_loader = DataLoader(
-        TensorDataset(spatial_X_test, temporal_X_test),
-        batch_size=config["training"]["batch_size"],
-        shuffle=False,
-    )
-    with torch.no_grad():
-        per_model_preds_list = []
-        for model in final_models:
-            batch_preds = []
-            for batch_spatial, batch_temporal in test_loader:
-                batch_preds.append(
-                    model(batch_spatial.to(device), batch_temporal.to(device)).cpu()
-                )
-            per_model_preds_list.append(torch.cat(batch_preds, dim=0))
-        per_model_preds = torch.stack(per_model_preds_list)  # [num_models, N_test, 1]
-
-    mean_pred = per_model_preds.mean(dim=0)
-    var_pred = per_model_preds.var(dim=0)
-
-    # --- Actual test-set accuracy metrics against real labels ---
-    # This is the specific gap exp4 has: it loads a labeled test set and
-    # never scores against it.
-    rmse = compute_rmse(mean_pred, y_test)
-    nlpd = compute_nlpd(mean_pred, var_pred, y_test)
-    crps = compute_crps(mean_pred, var_pred, y_test)
-    print(f"Test-set RMSE: {rmse:.4f}")
-    print(f"Test-set NLPD: {nlpd:.4f}")
-    print(f"Test-set CRPS: {crps:.4f}")
-
-    # Bias / variance-of-difference decomposition of RMSE -- same validation
-    # metrics DUACS L4 products report against independent along-track/
-    # in-situ observations, so this puts DRF's test-set accuracy on the same
-    # footing as that standard. test_rmse**2 ~= test_bias**2 +
-    # test_variance_of_diff (exact only for population variance; torch's
-    # default unbiased estimator differs by a factor of N/(N-1), negligible
-    # for these test set sizes).
-    residuals = mean_pred - y_test
-    test_bias = residuals.mean().item()
-    test_variance_of_diff = residuals.var().item()
-    print(f"Test-set bias: {test_bias:.4f}")
-    print(f"Test-set variance of diff: {test_variance_of_diff:.4f}")
-
-    # --- Output paths, auto-derived from the config filename ---
-    # Never hand-typed in the config itself — removes the copy-paste-bug
-    # class already hit twice with exp3/exp4's configs (missing
-    # plot_mean_filename, mistyped tensor path).
-    results_dir = SCRIPT_DIR / "results" / config_path.stem
-    results_dir.mkdir(parents=True, exist_ok=True)
-
-    results_df = pd.DataFrame([{
-        "spatial_lengthscale": spatial_lengthscale.item(),
-        "temporal_lengthscale": temporal_lengthscale.item(),
-        "amplitude": amplitude.item(),
-        "lengthscale2": lengthscale2.item(),
-        "amplitude2": amplitude2.item(),
-        "best_val_loss": best_loss_value,
-        "test_rmse": rmse,
-        "test_nlpd": nlpd,
-        "test_crps": crps,
-        "test_bias": test_bias,
-        "test_variance_of_diff": test_variance_of_diff,
-    }])
-    results_df = _round_df_sig_figs(results_df)
+    results_df = _round_df_sig_figs(pd.DataFrame(results_rows))
     results_df.to_csv(results_dir / "results.csv", index=False)
 
-    # --- Search history: every BO candidate tried, not just the winner ---
+    # --- Search history: every BO candidate tried, not just the winner(s) ---
     # optimizer.search_history is populated inside objective_function() --
     # one record per hyperparameter candidate, in the order optimize() tried
     # them (first n_initial_samples random draws, then n_iterations
     # GP-guided ones), which is what lets round_type be derived purely from
     # position rather than needing any new plumbing through objective_function.
-    search_history_df = pd.DataFrame(optimizer.search_history)
+    search_history_df = pd.DataFrame(search_history_list)
     search_history_df["round_type"] = [
         "initial_sample" if i < optimizer.n_initial_samples else "iteration"
         for i in range(len(search_history_df))
     ]
-    search_history_df["is_winner"] = (
-        search_history_df["final_loss"] == search_history_df["final_loss"].min()
-    )
-    # is_winner is computed above from the full-precision final_loss values,
-    # so rounding for display afterward doesn't affect which round it picks.
+    # Index-based (not a plain `== .min()` value comparison) so a tie
+    # between two different rounds can't mark more than one row as the
+    # winner -- matches final_loss_winner_idx/val_rmse_winner_idx above
+    # exactly, which already resolve ties to a single round via Python's
+    # min().
+    search_history_df["is_winner"] = search_history_df.index == final_loss_winner_idx
+    search_history_df["is_val_rmse_winner"] = search_history_df.index == val_rmse_winner_idx
+    # Computed above from the full-precision values, so rounding for display
+    # afterward doesn't affect which round either flag picks.
     search_history_df = _round_df_sig_figs(search_history_df)
     search_history_df.to_csv(results_dir / "search_history.csv", index=False)
 
-    # --- Per-epoch train/val loss for the actual final ensemble ---
-    # Previously untracked entirely -- these are the models whose weights
-    # get checkpointed and used going forward, unlike the throwaway
-    # BO-search-phase models above.
-    training_curve_df = _round_df_sig_figs(pd.DataFrame(training_curve_records))
-    training_curve_df.to_csv(results_dir / "training_curve.csv", index=False)
+    print(f"Results and per-candidate outputs saved to {results_dir}")
 
-    torch.save(mean_pred, results_dir / "final_predictions.pt")
-    torch.save(var_pred, results_dir / "final_variance.pt")
-    torch.save(per_model_preds, results_dir / "individual_final_predictions.pt")
-
-    for seed, model in enumerate(final_models):
-        save_checkpoint(
-            path=results_dir / "checkpoints" / f"model_{seed}.pt",
-            state_dict=model.state_dict(),
-            model_config=model_config,
-            hyperparameters=best_hyperparams,
-            norm_stats=data["normalization_stats"],
-            seed=seed,
-        )
-
-    print(f"Results, predictions, and checkpoints saved to {results_dir}")
-
-    # --- Plots ---
-    # Dense global grid + imshow, matching exp3/exp4's whole-globe snapshot
-    # style rather than scattering over the sparse real test-set points --
-    # judged more informative for visualizing overall model behaviour, with
-    # real accuracy (RMSE/NLPD/CRPS above) already handled separately against
-    # the genuine held-out test set. Unlike exp4, no retrain is needed here:
-    # exp4 never saved weights so it had to retrain a fresh ensemble just to
-    # get grid predictions; exp5 already has `final_models` in memory (and
-    # checkpointed to disk), so we just forward-pass those over the grid.
-    # Spatial inputs are raw radians here (never z-scored, unlike exp4), so
-    # no normalization needs to be applied/reversed for the grid coordinates
-    # either.
-    print("Building global grid for whole-globe snapshot...")
-
-    grid_lons_deg = torch.linspace(-180, 180, _NUM_LONGS)
-    grid_lats_deg = torch.linspace(-90, 90, _NUM_LATS)
-    grid_lon_grid, grid_lat_grid = torch.meshgrid(grid_lons_deg, grid_lats_deg, indexing="ij")
-    grid_spatial_X = torch.stack(
-        [torch.deg2rad(grid_lon_grid.reshape(-1)), torch.deg2rad(grid_lat_grid.reshape(-1))],
-        dim=1,
-    ).to(device)
-    # Normalized time = 0.0 -> the training set's mean timestamp (temporal
-    # data is z-scored using train-split mean/std; see normalization_stats).
-    grid_temporal_X = torch.zeros(grid_spatial_X.shape[0], 1, device=device)
-
-    # Batched for the same reason as the test-set predictions above -- safe
-    # margin against future larger grid resolutions, even though the default
-    # 512x256 grid is small enough this wasn't the cause of any OOM so far.
-    grid_loader = DataLoader(
-        TensorDataset(grid_spatial_X.cpu(), grid_temporal_X.cpu()),
-        batch_size=config["training"]["batch_size"],
-        shuffle=False,
-    )
-    with torch.no_grad():
-        grid_per_model_preds_list = []
-        for model in final_models:
-            batch_preds = []
-            for batch_spatial, batch_temporal in grid_loader:
-                batch_preds.append(
-                    model(batch_spatial.to(device), batch_temporal.to(device)).cpu()
-                )
-            grid_per_model_preds_list.append(torch.cat(batch_preds, dim=0))
-        grid_per_model_preds = torch.stack(grid_per_model_preds_list)  # [num_models, N_grid, 1]
-
-    grid_mean_pred = grid_per_model_preds.mean(dim=0).squeeze().reshape(_NUM_LONGS, _NUM_LATS)
-    grid_var_pred = grid_per_model_preds.var(dim=0).squeeze().reshape(_NUM_LONGS, _NUM_LATS)
-    print("Global grid predictions computed.")
-
-    _save_global_grid_plot(
-        grid_mean_pred.T.numpy(), cmap="coolwarm", vmin=-0.25, vmax=0.25,
-        colorbar_label="Predicted SLA (m)", save_path=results_dir / "final_mean.png",
-    )
-    _save_global_grid_plot(
-        grid_var_pred.T.numpy(), cmap="viridis", vmin=0, vmax=0.2,
-        colorbar_label="Variance", save_path=results_dir / "final_variance.png",
-    )
-
-    # --- Search-progress / training-curve plots ---
+    # --- Search-progress plot ---
     # Regenerable later without retraining via
     # `python plot_search_history.py --results-dir results/<config-name>`
-    # (reads search_history.csv / training_curve.csv saved above) -- same
-    # relationship replot_grid.py has to the whole-globe grid snapshot.
+    # (reads search_history.csv saved above) -- same relationship
+    # replot_grid.py has to the whole-globe grid snapshot.
     plot_search_progress(results_dir)
-    plot_training_curve(results_dir)
+    # Duplicated (small files) into each candidate subfolder so
+    # replot_grid.py/plot_search_history.py work unmodified when pointed at
+    # a candidate subfolder directly, without also needing the shared
+    # top-level search_history.csv/search_progress.png alongside it.
+    for criterion_label, _ in candidates:
+        shutil.copy(
+            results_dir / "search_history.csv",
+            results_dir / criterion_label / "search_history.csv",
+        )
+        shutil.copy(
+            results_dir / "search_progress.png",
+            results_dir / criterion_label / "search_progress.png",
+        )
 
     print("Done.")

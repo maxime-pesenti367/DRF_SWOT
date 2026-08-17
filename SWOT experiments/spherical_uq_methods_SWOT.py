@@ -266,9 +266,20 @@ class SphericalBayesianOptimizerSWOT(SphericalBayesianOptimizer):
         """
         Same as SphericalBayesianOptimizer.objective_function, except calling
         train_model_process_swot (with the extra settings) instead of
-        train_model_process. See that method for the rationale behind each
-        piece of this -- unchanged here.
+        train_model_process, and printing which BO round is about to start
+        (self.search_history's current length is exactly the count of
+        already-completed rounds, i.e. the index of this one -- same logic
+        experiment_5.py uses to derive round_type from position alone).
+        See objective_function's DRF counterpart for the rationale behind
+        everything else here -- unchanged.
         """
+        round_idx = len(self.search_history)
+        if round_idx < self.n_initial_samples:
+            print(f"--- Initial sample {round_idx + 1}/{self.n_initial_samples} ---")
+        else:
+            iteration_num = round_idx - self.n_initial_samples + 1
+            print(f"--- BO iteration {iteration_num}/{self.n_iterations} ---")
+
         if mp.get_start_method(allow_none=True) != "spawn":
             mp.set_start_method("spawn", force=True)
         args_list = [

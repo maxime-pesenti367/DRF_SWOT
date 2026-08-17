@@ -45,20 +45,29 @@ def _needs_wide_range_scale(values, ratio_threshold=20):
 def plot_search_progress(results_dir):
     """Plots final_loss (the actual BO objective), val_rmse, val_nlpd, and
     val_crps against BO round, distinguishing the random initial_samples
-    from the GP-guided iterations, with the winning round marked.
+    from the GP-guided iterations, with the final_loss-winning round marked
+    (and the val_rmse-winning round too, if it's a different one -- see
+    is_val_rmse_winner below).
 
     val_bias/val_variance_of_diff (the RMSE = sqrt(bias**2 +
-    variance_of_diff) decomposition) are only present in search_history.csv
-    for runs that went through SphericalBayesianOptimizerSWOT
-    (spherical_uq_methods_SWOT.py) rather than the protected DRF
-    SphericalBayesianOptimizer -- checked for here rather than assumed, so
-    this still works unchanged on every earlier/non-SWOT run's CSV."""
+    variance_of_diff) decomposition) and is_val_rmse_winner are only present
+    in search_history.csv for runs that went through
+    SphericalBayesianOptimizerSWOT (spherical_uq_methods_SWOT.py) rather
+    than the protected DRF SphericalBayesianOptimizer -- checked for here
+    rather than assumed, so this still works unchanged on every earlier/
+    non-SWOT run's CSV."""
     results_dir = Path(results_dir)
     df = pd.read_csv(results_dir / "search_history.csv")
 
     initial = df[df["round_type"] == "initial_sample"]
     iteration = df[df["round_type"] == "iteration"]
     winner = df[df["is_winner"]]
+    # Only plotted if it's a genuinely different round from the final_loss
+    # winner -- otherwise the two markers would just sit exactly on top of
+    # each other, adding visual noise with no new information.
+    rmse_winner = pd.DataFrame()
+    if "is_val_rmse_winner" in df.columns:
+        rmse_winner = df[df["is_val_rmse_winner"] & ~df["is_winner"]]
 
     has_bias_variance = "val_bias" in df.columns and "val_variance_of_diff" in df.columns
     if has_bias_variance:
@@ -97,8 +106,13 @@ def plot_search_progress(results_dir):
             )
         ax.scatter(
             winner["round"], winner[col],
-            color="tab:red", marker="*", s=200, label="winner", zorder=3,
+            color="tab:red", marker="*", s=200, label="final_loss winner", zorder=3,
         )
+        if len(rmse_winner) > 0:
+            ax.scatter(
+                rmse_winner["round"], rmse_winner[col],
+                color="tab:green", marker="*", s=200, label="val_rmse winner", zorder=3,
+            )
         ax.set_ylabel(ylabel)
         ax.grid(alpha=0.3)
         # final_loss and val_nlpd can both span several orders of magnitude
