@@ -324,6 +324,18 @@ class SphericalBayesianOptimizerSWOT(SphericalBayesianOptimizer):
         p_weight = self.p_weight
         final_loss = (1 - p_weight) * huber_loss.item() + p_weight * avg_reg_loss
 
+        # Same bias / variance-of-difference decomposition of RMSE added to
+        # experiment_5.py's final test-set scoring (val_rmse**2 ~=
+        # val_bias**2 + val_variance_of_diff) -- here on the val set instead,
+        # once per BO round. SWOT-only (not added to the protected DRF
+        # SphericalBayesianOptimizer/objective_function this subclasses),
+        # so search_history.csv only has these two columns for runs that
+        # went through this class -- plot_search_history.py checks for their
+        # presence rather than assuming they're always there.
+        val_residuals = avg_predictions - val_values
+        val_bias = val_residuals.mean().item()
+        val_variance_of_diff = val_residuals.var().item()
+
         self.test_predictions_per_iteration.append(
             (test_predictions, final_loss, hyperparams)
         )
@@ -345,6 +357,8 @@ class SphericalBayesianOptimizerSWOT(SphericalBayesianOptimizer):
             "val_rmse": compute_rmse(avg_predictions, val_values),
             "val_nlpd": compute_nlpd(avg_predictions, var_predictions, val_values),
             "val_crps": compute_crps(avg_predictions, var_predictions, val_values),
+            "val_bias": val_bias,
+            "val_variance_of_diff": val_variance_of_diff,
         })
 
         return final_loss
