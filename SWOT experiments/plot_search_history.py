@@ -45,7 +45,14 @@ def _needs_wide_range_scale(values, ratio_threshold=20):
 def plot_search_progress(results_dir):
     """Plots final_loss (the actual BO objective), val_rmse, val_nlpd, and
     val_crps against BO round, distinguishing the random initial_samples
-    from the GP-guided iterations, with the winning round marked."""
+    from the GP-guided iterations, with the winning round marked.
+
+    val_bias/val_variance_of_diff (the RMSE = sqrt(bias**2 +
+    variance_of_diff) decomposition) are only present in search_history.csv
+    for runs that went through SphericalBayesianOptimizerSWOT
+    (spherical_uq_methods_SWOT.py) rather than the protected DRF
+    SphericalBayesianOptimizer -- checked for here rather than assumed, so
+    this still works unchanged on every earlier/non-SWOT run's CSV."""
     results_dir = Path(results_dir)
     df = pd.read_csv(results_dir / "search_history.csv")
 
@@ -53,15 +60,32 @@ def plot_search_progress(results_dir):
     iteration = df[df["round_type"] == "iteration"]
     winner = df[df["is_winner"]]
 
-    panels = [
-        ("final_loss", "final_loss (BO objective)"),
-        ("val_rmse", "val RMSE"),
-        ("val_nlpd", "val NLPD"),
-        ("val_crps", "val CRPS"),
-    ]
-    fig, axes = plt.subplots(len(panels), 1, sharex=True, figsize=(8, 11))
+    has_bias_variance = "val_bias" in df.columns and "val_variance_of_diff" in df.columns
+    if has_bias_variance:
+        # 3x2, laid out (in reading order) so val_rmse sits directly beside
+        # val_bias and directly above val_variance_of_diff -- the trio the
+        # RMSE**2 = bias**2 + variance_of_diff identity ties together.
+        panels = [
+            ("final_loss", "final_loss (BO objective)"),
+            ("val_nlpd", "val NLPD"),
+            ("val_rmse", "val RMSE"),
+            ("val_bias", "val bias"),
+            ("val_variance_of_diff", "val variance of diff"),
+            ("val_crps", "val CRPS"),
+        ]
+        fig, axes = plt.subplots(3, 2, sharex=True, figsize=(14, 10))
+    else:
+        panels = [
+            ("final_loss", "final_loss (BO objective)"),
+            ("val_rmse", "val RMSE"),
+            ("val_nlpd", "val NLPD"),
+            ("val_crps", "val CRPS"),
+        ]
+        fig, axes = plt.subplots(len(panels), 1, sharex=True, figsize=(8, 11))
 
-    for ax, (col, ylabel) in zip(axes, panels):
+    flat_axes = axes.flat
+
+    for ax, (col, ylabel) in zip(flat_axes, panels):
         ax.scatter(
             initial["round"], initial[col],
             color="tab:gray", label="initial_samples", zorder=2,
@@ -86,8 +110,10 @@ def plot_search_progress(results_dir):
         if _needs_wide_range_scale(df[col]):
             ax.set_yscale("symlog")
 
-    axes[0].legend()
-    axes[-1].set_xlabel("BO round")
+    flat_axes[0].legend()
+    n_cols = axes.shape[1] if axes.ndim == 2 else 1
+    for ax in flat_axes[-n_cols:]:
+        ax.set_xlabel("BO round")
     fig.suptitle("Bayesian-optimization search progress")
     fig.tight_layout()
     fig.savefig(results_dir / "search_progress.png", dpi=200)
