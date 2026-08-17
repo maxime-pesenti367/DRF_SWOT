@@ -22,8 +22,8 @@ model:
     nu: 1.5
 
 bayesian_optimization:
-  n_iterations: 8
-  initial_samples: 8
+  n_iterations: 12
+  initial_samples: 12
   bounds:
     - [1e-5, 0.1]  # spatial_lengthscale
     - [1e-5, 10]   # temporal_lengthscale
