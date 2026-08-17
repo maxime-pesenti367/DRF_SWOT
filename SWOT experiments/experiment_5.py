@@ -13,6 +13,7 @@ anything.
 """
 
 import argparse
+import copy
 from pathlib import Path
 
 import cartopy.crs as ccrs
@@ -27,6 +28,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from DRF.models import DeepMaternRandomPhaseS2RFFNN
 from DRF.spherical_uq_methods import SphericalBayesianOptimizer
+from spherical_uq_methods_SWOT import SphericalBayesianOptimizerSWOT
 from DRF.utils import compute_rmse, compute_nlpd, compute_crps
 from drive_paths import get_drive_base_path
 from model_io import save_checkpoint
@@ -119,6 +121,9 @@ def train_final_model(
     device,
     n_epochs,
     batch_size,
+    early_stopping_patience=None,
+    lr_scheduler_config=None,
+    gradient_clip_max_norm=None,
 ):
     """
     Trains one model to completion and returns the model object itself (not
@@ -136,6 +141,16 @@ def train_final_model(
     scope here. This is a small, deliberate duplication of its training loop
     for the two new things it doesn't support: handing back a model whose
     weights can actually be persisted, and a loss history for it.
+
+    early_stopping_patience/lr_scheduler_config/gradient_clip_max_norm are
+    optional opt-in features (see spherical_uq_methods_SWOT.py for the
+    BO-search-phase equivalent) -- all default to None, reproducing exactly
+    this function's original behaviour when a config doesn't set them.
+    Deliberately does NOT try to reproduce whatever epoch the BO-search
+    phase's early stopping picked for these same hyperparameters -- GPU
+    training isn't bit-reproducible by default, so this applies the same
+    stopping *rule* fresh to its own run rather than replaying a specific
+    epoch number from a different run.
     """
     torch.manual_seed(seed)
     spatial_lengthscale, temporal_lengthscale, amplitude, lengthscale2, amplitude2 = hyperparams
@@ -166,6 +181,25 @@ def train_final_model(
     train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_data, batch_size=batch_size)
 
+    scheduler = None
+    scheduler_type = None
+    if lr_scheduler_config is not None:
+        scheduler_type = lr_scheduler_config.get("type", "cosine")
+        if scheduler_type == "cosine":
+            # T_max tied to this run's own n_epochs -- see
+            # spherical_uq_methods_SWOT.py's copy of this for the rationale.
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs)
+        elif scheduler_type == "plateau":
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode="min", patience=lr_scheduler_config.get("patience", 2)
+            )
+        else:
+            raise ValueError(f"Unknown lr_scheduler type: {scheduler_type!r}")
+
+    best_val_loss = float("inf")
+    best_state = None
+    epochs_without_improvement = 0
+
     epoch_history = []
     for epoch in range(n_epochs):
         model.train()
@@ -181,6 +215,8 @@ def train_final_model(
             outputs = model(batch_spatial, batch_temporal)
             loss = criterion(outputs, batch_values)
             loss.backward()
+            if gradient_clip_max_norm is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_max_norm)
             optimizer.step()
 
             train_loss_sum += loss.item()
@@ -212,6 +248,28 @@ def train_final_model(
             "val_loss": avg_val_loss,
             "val_rmse": val_rmse,
         })
+
+        if scheduler_type == "plateau":
+            scheduler.step(avg_val_loss)
+        elif scheduler_type == "cosine":
+            scheduler.step()
+
+        if early_stopping_patience is not None:
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                best_state = copy.deepcopy(model.state_dict())
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
+            if epochs_without_improvement >= early_stopping_patience:
+                print(
+                    f"Early stopping at epoch {epoch+1} "
+                    f"(no improvement for {early_stopping_patience} epochs)"
+                )
+                break
+
+    if early_stopping_patience is not None and best_state is not None:
+        model.load_state_dict(best_state)
 
     model.eval()
     return model, epoch_history
@@ -301,7 +359,31 @@ if __name__ == "__main__":
     # Reuses SphericalBayesianOptimizer / train_model_process from DRF
     # unmodified, but — unlike exp4 — with a REAL held-out val split
     # instead of reusing train_dataset as val_data.
-    optimizer = SphericalBayesianOptimizer(
+    #
+    # Early stopping / LR scheduling / gradient clipping are opt-in via
+    # optional training.early_stopping / training.lr_scheduler /
+    # training.gradient_clipping config keys -- absent by default, so an
+    # existing config with none of these set behaves exactly as before,
+    # using SphericalBayesianOptimizer unmodified. Setting any of them
+    # switches to SphericalBayesianOptimizerSWOT (spherical_uq_methods_SWOT.py)
+    # instead, which is not a fork of the DRF class but a subclass of it --
+    # see that module's docstring.
+    early_stopping_config = config["training"].get("early_stopping")
+    early_stopping_patience = (
+        early_stopping_config["patience"] if early_stopping_config else None
+    )
+    lr_scheduler_config = config["training"].get("lr_scheduler")
+    gradient_clipping_config = config["training"].get("gradient_clipping")
+    gradient_clip_max_norm = (
+        gradient_clipping_config["max_norm"] if gradient_clipping_config else None
+    )
+    use_swot_training_features = (
+        early_stopping_patience is not None
+        or lr_scheduler_config is not None
+        or gradient_clip_max_norm is not None
+    )
+
+    optimizer_kwargs = dict(
         model_class=DeepMaternRandomPhaseS2RFFNN,
         train_data=train_dataset,
         val_data=val_dataset,
@@ -324,6 +406,15 @@ if __name__ == "__main__":
         n_epochs=config["training"]["num_epochs"],
         max_parallel_models=config["training"].get("max_parallel_models"),
     )
+    if use_swot_training_features:
+        optimizer = SphericalBayesianOptimizerSWOT(
+            early_stopping_patience=early_stopping_patience,
+            lr_scheduler_config=lr_scheduler_config,
+            gradient_clip_max_norm=gradient_clip_max_norm,
+            **optimizer_kwargs,
+        )
+    else:
+        optimizer = SphericalBayesianOptimizer(**optimizer_kwargs)
 
     best_hyperparams, best_loss = optimizer.optimize(
         n_iterations=config["bayesian_optimization"]["n_iterations"]
@@ -369,6 +460,9 @@ if __name__ == "__main__":
             device=device,
             n_epochs=config["training"]["num_epochs"],
             batch_size=config["training"]["batch_size"],
+            early_stopping_patience=early_stopping_patience,
+            lr_scheduler_config=lr_scheduler_config,
+            gradient_clip_max_norm=gradient_clip_max_norm,
             **model_config,
         )
         final_models.append(model)
