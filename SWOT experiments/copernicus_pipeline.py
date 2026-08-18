@@ -15,33 +15,87 @@ import numpy as np
 from drive_paths import get_drive_base_path  # noqa: F401 -- re-exported for existing callers (build_experiment_data.py, notebooks)
 
 
-# Maps clean satellite names to Copernicus product IDs
+# Maps product type (nrt = near-real-time, my = multi-year reprocessed) ->
+# clean satellite name -> resolution -> Copernicus product ID. Satellite
+# names are kept consistent across "nrt" and "my" where they refer to the
+# same physical satellite/orbit (e.g. "cryosat2" is the current/new-orbit
+# product in both), so switching product_type in a data config without
+# changing the satellite list behaves predictably.
 SATELLITE_DATASET_MAP = {
-    "swot_nadir": {
-        "1hz": "cmems_obs-sl_glo_phy-ssh_nrt_swon-l3-duacs_PT1S",
-        "5hz": "cmems_obs-sl_glo_phy-ssh_nrt_swon-l3-duacs_PT0.2S"
+    "nrt": {
+        "swot_nadir": {
+            "1hz": "cmems_obs-sl_glo_phy-ssh_nrt_swon-l3-duacs_PT1S",
+            "5hz": "cmems_obs-sl_glo_phy-ssh_nrt_swon-l3-duacs_PT0.2S"
+        },
+        "jason3_interleaved": {
+            "1hz": "cmems_obs-sl_glo_phy-ssh_nrt_j3n-l3-duacs_PT1S",
+            "5hz": "cmems_obs-sl_glo_phy-ssh_nrt_j3n-l3-duacs_PT0.2S"
+        },
+        "jason3_LRO": {
+            "1hz": "cmems_obs-sl_glo_phy-ssh_nrt_j3g-l3-duacs_PT1S-i",
+            "5hz": "cmems_obs-sl_glo_phy-ssh_nrt_j3g-l3-duacs_PT0.2S-i"
+        },
+        "cryosat2":  {
+            "1hz": "cmems_obs-sl_glo_phy-ssh_nrt_c2n-l3-duacs_PT1S"
+        },
+        "sentinel3a":  {
+            "1hz": "cmems_obs-sl_glo_phy-ssh_nrt_s3a-l3-duacs_PT1S",
+            "5hz": "cmems_obs-sl_glo_phy-ssh_nrt_s3a-l3-duacs_PT0.2S"
+        },
+        "sentinel3b":  {
+            "1hz": "cmems_obs-sl_glo_phy-ssh_nrt_s3b-l3-duacs_PT1S",
+            "5hz": "cmems_obs-sl_glo_phy-ssh_nrt_s3b-l3-duacs_PT0.2S"
+        }
+        # PLEASE ADD MORE AS NEEDED
     },
-    "jason3_interleaved": {
-        "1hz": "cmems_obs-sl_glo_phy-ssh_nrt_j3n-l3-duacs_PT1S",
-        "5hz": "cmems_obs-sl_glo_phy-ssh_nrt_j3n-l3-duacs_PT0.2S"
+    "my": {
+        # Only 1hz (PT1S) products exist for the MY line as of the codes
+        # supplied for this project -- no 5hz/PT0.2S variants.
+        "topex_poseidon":               {"1hz": "cmems_obs-sl_glo_phy-ssh_my_tp-l3-duacs_PT1S"},
+        "topex_poseidon_new_orbit":     {"1hz": "cmems_obs-sl_glo_phy-ssh_my_tpn-l3-duacs_PT1S"},
+        "ers1":                         {"1hz": "cmems_obs-sl_glo_phy-ssh_my_e1-l3-duacs_PT1S"},
+        "ers1_geodetic":                {"1hz": "cmems_obs-sl_glo_phy-ssh_my_e1g-l3-duacs_PT1S"},
+        "ers2":                         {"1hz": "cmems_obs-sl_glo_phy-ssh_my_e2-l3-duacs_PT1S"},
+        "gfo":                          {"1hz": "cmems_obs-sl_glo_phy-ssh_my_g2-l3-duacs_PT1S"},
+        "envisat":                      {"1hz": "cmems_obs-sl_glo_phy-ssh_my_en-l3-duacs_PT1S"},
+        "envisat_new_orbit":            {"1hz": "cmems_obs-sl_glo_phy-ssh_my_enn-l3-duacs_PT1S"},
+        "jason1":                       {"1hz": "cmems_obs-sl_glo_phy-ssh_my_j1-l3-duacs_PT1S"},
+        "jason1_new_orbit":             {"1hz": "cmems_obs-sl_glo_phy-ssh_my_j1n-l3-duacs_PT1S"},
+        "jason1_geodetic":              {"1hz": "cmems_obs-sl_glo_phy-ssh_my_j1g-l3-duacs_PT1S"},
+        "jason2":                       {"1hz": "cmems_obs-sl_glo_phy-ssh_my_j2-l3-duacs_PT1S"},
+        "jason2_interleaved":           {"1hz": "cmems_obs-sl_glo_phy-ssh_my_j2n-l3-duacs_PT1S"},
+        "jason2_long_repeat":           {"1hz": "cmems_obs-sl_glo_phy-ssh_my_j2g-l3-duacs_PT1S"},
+        "jason3":                       {"1hz": "cmems_obs-sl_glo_phy-ssh_my_j3-l3-duacs_PT1S"},
+        "jason3_interleaved":           {"1hz": "cmems_obs-sl_glo_phy-ssh_my_j3n-l3-duacs_PT1S"},
+        "jason3_LRO":                   {"1hz": "cmems_obs-sl_glo_phy-ssh_my_j3g-l3-duacs_PT1S-i"},
+        "cryosat2_old_orbit":           {"1hz": "cmems_obs-sl_glo_phy-ssh_my_c2-l3-duacs_PT1S"},
+        "cryosat2":                     {"1hz": "cmems_obs-sl_glo_phy-ssh_my_c2n-l3-duacs_PT1S"},
+        "saral_altika":                 {"1hz": "cmems_obs-sl_glo_phy-ssh_my_al-l3-duacs_PT1S"},
+        "saral_altika_geodetic":        {"1hz": "cmems_obs-sl_glo_phy-ssh_my_alg-l3-duacs_PT1S"},
+        "haiyang2a":                    {"1hz": "cmems_obs-sl_glo_phy-ssh_my_h2a-l3-duacs_PT1S"},
+        "haiyang2a_geodetic":           {"1hz": "cmems_obs-sl_glo_phy-ssh_my_h2ag-l3-duacs_PT1S"},
+        "haiyang2b":                    {"1hz": "cmems_obs-sl_glo_phy-ssh_my_h2b-l3-duacs_PT1S"},
+        "sentinel3a":                   {"1hz": "cmems_obs-sl_glo_phy-ssh_my_s3a-l3-duacs_PT1S"},
+        "sentinel3b":                   {"1hz": "cmems_obs-sl_glo_phy-ssh_my_s3b-l3-duacs_PT1S"},
+        "sentinel6a_lrm":               {"1hz": "cmems_obs-sl_glo_phy-ssh_my_s6a-lr-l3-duacs_PT1S"},
+        "swot_nadir":                   {"1hz": "cmems_obs-sl_glo_phy-ssh_my_swon-l3-duacs_PT1S"},
+        "swot_nadir_calval":            {"1hz": "cmems_obs-sl_glo_phy-ssh_my_swonc-l3-duacs_PT1S"},
+        # PLEASE ADD MORE AS NEEDED
     },
-    "jason3_LRO": {
-        "1hz": "cmems_obs-sl_glo_phy-ssh_nrt_j3g-l3-duacs_PT1S-i",
-        "5hz": "cmems_obs-sl_glo_phy-ssh_nrt_j3g-l3-duacs_PT0.2S-i"
-    },
-    "cryosat2":  {
-        "1hz": "cmems_obs-sl_glo_phy-ssh_nrt_c2n-l3-duacs_PT1S"
-    },
-    "sentinel3a":  {
-        "1hz": "cmems_obs-sl_glo_phy-ssh_nrt_s3a-l3-duacs_PT1S",
-        "5hz": "cmems_obs-sl_glo_phy-ssh_nrt_s3a-l3-duacs_PT0.2S"
-    },
-    "sentinel3b":  {
-        "1hz": "cmems_obs-sl_glo_phy-ssh_nrt_s3b-l3-duacs_PT1S",
-        "5hz": "cmems_obs-sl_glo_phy-ssh_nrt_s3b-l3-duacs_PT0.2S"
-    }
-    # PLEASE ADD MORE AS NEEDED
 }
+
+
+def _resolve_satellites(config, product_type):
+    """Returns the list of {"name", "freq"} dicts to fetch/load for this
+    config. `satellites: all` expands to every satellite registered under
+    this product_type, all at the single `freq` the config specifies at the
+    top level (config["freq"]) -- an explicit list is passed through
+    unchanged (each entry keeps its own per-satellite freq, as before)."""
+    satellites = config["satellites"]
+    if satellites == "all":
+        freq = config["freq"]
+        return [{"name": name, "freq": freq} for name in SATELLITE_DATASET_MAP[product_type]]
+    return satellites
 
 
 # Downloads and updates per-satellite Zarr stores on Google Drive
@@ -52,7 +106,8 @@ def fetch_and_store_satellites(config: dict, force_redownload: bool = False):
     drive_zarr_base = drive_base / "zarr files"
     drive_zarr_base.mkdir(parents=True, exist_ok=True)
 
-    satellites = config["satellites"]
+    product_type = config.get("product_type", "nrt")
+    satellites = _resolve_satellites(config, product_type)
     start_date = config["start_date"]
     end_date = config["end_date"]
     start_date = start_date.replace(":", "-")
@@ -67,15 +122,18 @@ def fetch_and_store_satellites(config: dict, force_redownload: bool = False):
             sat_name = sat
             freq = "1hz"
 
-        if sat_name not in SATELLITE_DATASET_MAP:
-            print(f"Skipping unknown satellite: {sat_name}")
+        if sat_name not in SATELLITE_DATASET_MAP[product_type]:
+            print(f"Skipping unknown satellite: {sat_name} (product_type={product_type})")
+            continue
+        if freq not in SATELLITE_DATASET_MAP[product_type][sat_name]:
+            print(f"Skipping {sat_name}: no {freq} product for product_type={product_type}")
             continue
 
-        dataset_id = SATELLITE_DATASET_MAP[sat_name][freq]
-        
+        dataset_id = SATELLITE_DATASET_MAP[product_type][sat_name][freq]
+
         zarr_name = f"{sat_name}_{freq}_{start_date}_{end_date}.zarr"
 
-        final_drive_path = drive_zarr_base / sat_name / zarr_name
+        final_drive_path = drive_zarr_base / product_type / sat_name / zarr_name
 
         if final_drive_path.exists() and not force_redownload:
             print(f"Skipping {sat_name}: Dataset already exists at {final_drive_path}")
@@ -152,17 +210,18 @@ def load_experiment_dataset(config: dict):
 
     drive_base, _ = get_drive_base_path()
     drive_zarr_base = drive_base / "zarr files"
+    product_type = config.get("product_type", "nrt")
     start_date = config["start_date"]
     end_date = config["end_date"]
     start_date = start_date.replace(":", "-")
     end_date = end_date.replace(":", "-")
-    
+
     loaded_data = {}
-    for sat_dict in config["satellites"]:
+    for sat_dict in _resolve_satellites(config, product_type):
         sat_name = sat_dict["name"]
         freq = sat_dict.get("freq", "1hz") # Defaults to 1hz if not specified
 
-        zarr_path = drive_zarr_base / sat_name / f"{sat_name}_{freq}_{start_date}_{end_date}.zarr"
+        zarr_path = drive_zarr_base / product_type / sat_name / f"{sat_name}_{freq}_{start_date}_{end_date}.zarr"
         if not zarr_path.exists():
             # Instead of raising an error, print warning and skip
             print(f"Warning: No saved data found for {sat_name} in this date range. Skipping.")
