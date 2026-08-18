@@ -15,7 +15,6 @@ anything.
 import argparse
 import copy
 import math
-import shutil
 from pathlib import Path
 
 import cartopy.crs as ccrs
@@ -742,23 +741,12 @@ if __name__ == "__main__":
     print(f"Results and per-candidate outputs saved to {results_dir}")
 
     # --- Search-progress plot ---
-    # Regenerable later without retraining via
+    # Lives only in results_dir, not duplicated into each candidate
+    # subfolder -- it covers the whole search (both winners marked), so
+    # there's exactly one authoritative copy to regenerate later via
     # `python plot_search_history.py --results-dir results/<config-name>`
-    # (reads search_history.csv saved above) -- same relationship
-    # replot_grid.py has to the whole-globe grid snapshot.
+    # (pointed at the top-level dir, not a candidate subfolder) rather than
+    # redoing it once per candidate.
     plot_search_progress(results_dir)
-    # Duplicated (small files) into each candidate subfolder so
-    # replot_grid.py/plot_search_history.py work unmodified when pointed at
-    # a candidate subfolder directly, without also needing the shared
-    # top-level search_history.csv/search_progress.png alongside it.
-    for criterion_label, _ in candidates:
-        shutil.copy(
-            results_dir / "search_history.csv",
-            results_dir / criterion_label / "search_history.csv",
-        )
-        shutil.copy(
-            results_dir / "search_progress.png",
-            results_dir / criterion_label / "search_progress.png",
-        )
 
     print("Done.")
