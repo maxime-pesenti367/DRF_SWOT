@@ -73,14 +73,22 @@ def train_model_process_swot(
     d_phi,
     d_theta,
     n_epochs,
+    learning_rate=0.1,
     early_stopping_patience=None,
     lr_scheduler_config=None,
     gradient_clip_max_norm=None,
 ):
     """
     Trains a single model for the spherical case using Huber loss -- same as
-    DRF.spherical_uq_methods.train_model_process, plus three optional,
+    DRF.spherical_uq_methods.train_model_process, plus four optional,
     independently-opt-in features:
+
+      - learning_rate: Adam's initial LR, defaulting to 0.1 -- the value
+        this function (and DRF.spherical_uq_methods.train_model_process,
+        and experiment_5.py's train_final_model) previously hardcoded
+        everywhere, kept as the default purely as a safety net. The real
+        caller (SphericalBayesianOptimizerSWOT.objective_function) always
+        passes config["training"]["learning_rate"] explicitly.
 
       - early_stopping_patience: stop once this many epochs pass with no
         improvement in per-epoch val Huber loss, then roll back to the best
@@ -122,7 +130,7 @@ def train_model_process_swot(
         device=device,
     )
 
-    optimizer = optim.Adam(model.parameters(), lr=0.1)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.HuberLoss(delta=0.1)
 
     train_loader = DataLoader(train_data, batch_size=8000, shuffle=True)
@@ -276,12 +284,14 @@ class SphericalBayesianOptimizerSWOT(SphericalBayesianOptimizer):
         lr_scheduler_config=None,
         gradient_clip_max_norm=None,
         bounds=None,
+        learning_rate=0.1,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.early_stopping_patience = early_stopping_patience
         self.lr_scheduler_config = lr_scheduler_config
         self.gradient_clip_max_norm = gradient_clip_max_norm
+        self.learning_rate = learning_rate
         # [[low, high], ...] one pair per dimension (spatial_lengthscale,
         # temporal_lengthscale, amplitude, lengthscale2, amplitude2) -- the
         # same shape configs/exp5/*.yaml's bayesian_optimization.bounds
@@ -331,6 +341,7 @@ class SphericalBayesianOptimizerSWOT(SphericalBayesianOptimizer):
                 self.d_phi,
                 self.d_theta,
                 self.n_epochs,
+                self.learning_rate,
                 self.early_stopping_patience,
                 self.lr_scheduler_config,
                 self.gradient_clip_max_norm,

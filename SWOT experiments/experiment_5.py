@@ -144,6 +144,7 @@ def train_final_model(
     device,
     n_epochs,
     batch_size,
+    learning_rate=0.1,
     early_stopping_patience=None,
     lr_scheduler_config=None,
     gradient_clip_max_norm=None,
@@ -164,6 +165,12 @@ def train_final_model(
     scope here. This is a small, deliberate duplication of its training loop
     for the two new things it doesn't support: handing back a model whose
     weights can actually be persisted, and a loss history for it.
+
+    learning_rate defaults to 0.1 (the value this function -- and
+    DRF.spherical_uq_methods.train_model_process, and
+    train_model_process_swot -- previously hardcoded everywhere) purely as a
+    safety net; the real call site always passes
+    config["training"]["learning_rate"] explicitly now.
 
     early_stopping_patience/lr_scheduler_config/gradient_clip_max_norm are
     optional opt-in features (see spherical_uq_methods_SWOT.py for the
@@ -199,7 +206,7 @@ def train_final_model(
         device=device,
     )
 
-    optimizer = optim.Adam(model.parameters(), lr=0.1)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.HuberLoss(delta=0.1)
     train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_data, batch_size=batch_size)
@@ -342,6 +349,7 @@ def _retrain_and_save_candidate(
             device=device,
             n_epochs=config["training"]["num_epochs"],
             batch_size=config["training"]["batch_size"],
+            learning_rate=config["training"]["learning_rate"],
             early_stopping_patience=early_stopping_patience,
             lr_scheduler_config=lr_scheduler_config,
             gradient_clip_max_norm=gradient_clip_max_norm,
@@ -619,6 +627,10 @@ if __name__ == "__main__":
             # unaffected either way since every existing config's bounds
             # already match the hardcoded default.
             bounds=config["bayesian_optimization"]["bounds"],
+            # DRF.spherical_uq_methods.train_model_process (used on the
+            # protected path below) hardcodes lr=0.1 and ignores this too --
+            # train_model_process_swot doesn't, see spherical_uq_methods_SWOT.py.
+            learning_rate=config["training"]["learning_rate"],
             **optimizer_kwargs,
         )
     else:
@@ -634,6 +646,16 @@ if __name__ == "__main__":
                 "Set training.early_stopping/lr_scheduler/gradient_clipping "
                 "to route through SphericalBayesianOptimizerSWOT instead, "
                 "which does respect configured bounds."
+            )
+        configured_lr = config["training"]["learning_rate"]
+        if configured_lr != 0.1:
+            print(
+                f"WARNING: this run's training.learning_rate ({configured_lr}) "
+                "will be IGNORED -- DRF.spherical_uq_methods.train_model_process "
+                "(the protected DRF method) always uses lr=0.1. Set "
+                "training.early_stopping/lr_scheduler/gradient_clipping to "
+                "route through SphericalBayesianOptimizerSWOT instead, which "
+                "does respect the configured learning rate."
             )
 
     optimizer.optimize(n_iterations=config["bayesian_optimization"]["n_iterations"])
