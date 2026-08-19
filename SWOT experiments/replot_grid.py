@@ -48,7 +48,7 @@ _FIG_WIDTH_IN = _TOTAL_WIDTH_PX / _GRID_DPI
 _FIG_HEIGHT_IN = _TOTAL_HEIGHT_PX / _GRID_DPI
 
 
-def _save_global_grid_plot(data_np, cmap, vmin, vmax, colorbar_label, save_path):
+def _save_global_grid_plot(data_np, cmap, vmin, vmax, colorbar_label, save_path, mask_land=False):
     """Saves a whole-globe grid snapshot with the map rendered at exactly
     _NUM_LONGS x _NUM_LATS pixels -- no interpolation/resampling -- inset by
     a uniform _BORDER_PX white margin on all four sides. See experiment_5.py's
@@ -73,6 +73,14 @@ def _save_global_grid_plot(data_np, cmap, vmin, vmax, colorbar_label, save_path)
         vmax=vmax,
         interpolation="none",
     )
+    if mask_land:
+        # The model predicts a value everywhere (it has no notion of land vs
+        # ocean), so land pixels are real predictions, not missing data --
+        # this is a purely visual overlay (solid fill drawn on top of the
+        # data), not a NaN mask of data_np itself. cfeature.LAND is a
+        # Natural Earth polygon dataset cartopy already ships, so this needs
+        # no new dependency and no raster land/sea mask.
+        ax.add_feature(cfeature.LAND, facecolor="white", edgecolor="none", zorder=2)
     ax.coastlines()
     ax.add_feature(cfeature.BORDERS, linestyle=":")
     cax_left = map_left + 0.15 * map_width
@@ -148,6 +156,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
     )
+    parser.add_argument(
+        "--mask-land", action="store_true",
+        help="Cover land with a solid white overlay (Natural Earth polygons via cartopy) -- purely visual, the model still predicts a value there.",
+    )
     args = parser.parse_args()
 
     results_dir = Path(args.results_dir)
@@ -191,10 +203,12 @@ if __name__ == "__main__":
     _save_global_grid_plot(
         grid_mean_pred.T.numpy(), cmap="coolwarm", vmin=-0.25, vmax=0.25,
         colorbar_label="Predicted SLA (m)", save_path=results_dir / "final_mean.png",
+        mask_land=args.mask_land,
     )
     _save_global_grid_plot(
         grid_var_pred.T.numpy(), cmap="viridis", vmin=0, vmax=0.2,
         colorbar_label="Variance", save_path=results_dir / "final_variance.png",
+        mask_land=args.mask_land,
     )
 
     print(f"Regenerated final_mean.png and final_variance.png in {results_dir}")
