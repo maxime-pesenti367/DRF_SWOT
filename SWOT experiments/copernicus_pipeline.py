@@ -98,6 +98,51 @@ def _resolve_satellites(config, product_type):
     return satellites
 
 
+def _sparse_dataframe_to_dataset(df):
+    """Converts the long-format table returned by
+    copernicusmarine.read_dataframe() -- one row per observation, with a
+    "variable"/"value" column pair rather than one column per variable --
+    into an xr.Dataset indexed by time, one data variable per requested
+    variable.
+
+    Deliberately NOT going through copernicusmarine.subset()'s own
+    NetCDF-writer path (download_sparse.py's _dataframe_to_netcdf_per_platform
+    -> _add_attributes_to_dataset) for sparse/along-track altimetry products:
+    that path does a ds.sel(time=..., method="nearest") on its own
+    internally-pivoted per-platform dataset to populate a metadata attribute,
+    and for some satellite/date combinations that pivot ends up with a
+    non-monotonic time index (reproduced independent of pandas version --
+    confirmed via read_dataframe() on the same query returning clean,
+    already-sorted, duplicate-free timestamps, so the corruption is
+    introduced by copernicusmarine's own pivot/concat, not the source data
+    or an environment issue) -- raising "index must be monotonic increasing
+    or decreasing" and losing the whole fetch. This function reimplements
+    just the pivot step (proven to work up to that point) and skips the
+    attribute-population step entirely, since we don't use those NetCDF
+    global attributes downstream anyway."""
+    df = df.copy()
+    # read_dataframe() returns "time" as ISO-8601 strings, unlike the old
+    # NetCDF/subset() path where xarray auto-decoded CF-encoded time into
+    # datetime64 on load -- parse explicitly so newly-fetched satellites
+    # match the dtype of already-cached ones (xr.concat in combine_for_drf
+    # would otherwise choke on mixed object/datetime64 "time" dtypes when
+    # combining satellites fetched via the two different code paths).
+    # utc=True + tz_convert(None) strips the "Z"/UTC offset down to a naive
+    # timestamp (matching the old NetCDF path's CF-decoded dtype) instead of
+    # a tz-aware one -- xarray's zarr/CF encoder can't serialize
+    # datetime64[.., UTC] ("Cannot interpret 'datetime64[us, UTC]' as a data
+    # type"). astype pins the unit to ns, since pandas 3.x's default parsed
+    # resolution (us) would otherwise also mismatch already-cached files.
+    df["time"] = pd.to_datetime(df["time"], utc=True).dt.tz_convert(None).astype("datetime64[ns]")
+    df = df.sort_values("time")
+    pivot = df.pivot_table(index="time", columns="variable", values="value", aggfunc="first")
+    aux_cols = [c for c in ["latitude", "longitude"] if c in df.columns]
+    aux = df.groupby("time")[aux_cols].first()
+    merged = pivot.join(aux)
+    ds = merged.to_xarray()
+    return ds.set_coords(aux_cols)
+
+
 # Downloads and updates per-satellite Zarr stores on Google Drive
 # based on a provided DatasetSpec/Config
 def fetch_and_store_satellites(config: dict, force_redownload: bool = False):
@@ -140,58 +185,44 @@ def fetch_and_store_satellites(config: dict, force_redownload: bool = False):
             continue
 
         print(f"\n--- Fetching {sat_name} ({freq}) from Copernicus ---")
-        
-        # 1. Prepare temporary folders for NetCDF and Zarr
-        temp_nc_dir = temp_dir / "raw_nc"
-        temp_zarr_dir = temp_dir / "zarr"
-        
-        # Clear them if they already exist from a previous failed run
-        if temp_dir.exists():
-            shutil.rmtree(temp_dir)
-        temp_nc_dir.mkdir(parents=True, exist_ok=True)
 
-        # 2. Download the NetCDF file(s) locally using .subset()
-        print("Downloading NetCDF file(s)...")
-        
+        # 1. Fetch the sparse observation table directly (NOT
+        # copernicusmarine.subset()/file_format="netcdf" -- see
+        # _sparse_dataframe_to_dataset's docstring for why that path is
+        # unreliable for this project's altimetry products).
+        print("Downloading data...")
+
         try:
-            copernicusmarine.subset(
+            df = copernicusmarine.read_dataframe(
                 dataset_id=dataset_id,
                 variables=variables,
                 start_datetime=start_date,
                 end_datetime=end_date,
-                output_directory=str(temp_nc_dir),
-                file_format="netcdf"
             )
         except Exception as e:
             print(f"Warning: Could not fetch {sat_name}. It likely has no data for this date range.")
             print(f"API Error: {e}")
-            
-            # Clean up the temp directory so it's empty for the next satellite in the loop!
-            if temp_dir.exists():
-                shutil.rmtree(temp_dir)
-            
-            # Skip the rest of the loop and move to the next satellite
             continue
 
-        # 3. Load the downloaded NetCDF and convert to Zarr
-        # rglob() recursively searches through all subfolders!
-        # It will find the .nc files no matter what folders the API created.
-        nc_files = list(temp_nc_dir.rglob("*.nc"))
-        
-        if not nc_files:
-            print(f"Error: No NetCDF files found anywhere inside {temp_nc_dir}.")
+        if df.empty:
+            print(f"Warning: {sat_name} returned no rows for this date range. Skipping.")
             continue
-            
-        print(f"Found {len(nc_files)} NetCDF file(s). Converting to Zarr...")
-        
-        # open_mfdataset safely handles 1 file or multiple partitioned files
-        ds = xr.open_mfdataset(nc_files, combine='by_coords')
+
+        # 2. Pivot into an xr.Dataset and stage the Zarr write in a local
+        # temp folder before copying to the (often network-mounted) Drive
+        # path -- avoids a partially-written store landing directly on
+        # Drive if this fails partway through.
+        ds = _sparse_dataframe_to_dataset(df)
+
+        temp_zarr_dir = temp_dir / "zarr"
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
         ds.to_zarr(temp_zarr_dir, mode='w')
-        
-        # Always close the dataset to free up memory and release file locks
         ds.close()
 
-        # 4. Transfer the final Zarr folder to Google Drive
+        # 3. Transfer the final Zarr folder to Google Drive
         final_drive_path.parent.mkdir(parents=True, exist_ok=True)
         if final_drive_path.exists():
             shutil.rmtree(final_drive_path)
