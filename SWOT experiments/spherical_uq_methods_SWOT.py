@@ -298,7 +298,21 @@ class SphericalBayesianOptimizerSWOT(SphericalBayesianOptimizer):
         # already uses. None falls back to the same fixed default the
         # protected optimize() hardcodes, purely for safety; every real
         # caller should pass its own config-driven bounds explicitly.
-        self.bounds = bounds if bounds is not None else _DEFAULT_BOUNDS
+        #
+        # float()-cast explicitly: PyYAML's safe_load only recognizes bare
+        # exponential notation (e.g. "1e-5", no decimal point) as a float
+        # when it has an explicit sign or decimal point (e.g. "1.0e-5") --
+        # plain "1e-5" parses as a str instead, which used to be harmless
+        # since bounds was never actually consumed anywhere, but now raises
+        # `ValueError: too many dimensions 'str'` inside optimize()'s
+        # torch.tensor(self.bounds, ...) call. Casting here fixes it for
+        # every config regardless of which notation it happens to use,
+        # rather than relying on every config author remembering the
+        # decimal-point gotcha.
+        self.bounds = (
+            [[float(lo), float(hi)] for lo, hi in bounds]
+            if bounds is not None else _DEFAULT_BOUNDS
+        )
 
     def objective_function(self, hyperparams):
         """
