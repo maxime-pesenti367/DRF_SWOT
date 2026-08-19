@@ -611,10 +611,30 @@ if __name__ == "__main__":
             early_stopping_patience=early_stopping_patience,
             lr_scheduler_config=lr_scheduler_config,
             gradient_clip_max_norm=gradient_clip_max_norm,
+            # SphericalBayesianOptimizer.optimize() (the protected DRF
+            # method) hardcodes its own search bounds and never reads this
+            # config key at all -- SphericalBayesianOptimizerSWOT overrides
+            # optimize() specifically to respect it. Only wired through on
+            # this path for that reason; the protected path below is
+            # unaffected either way since every existing config's bounds
+            # already match the hardcoded default.
+            bounds=config["bayesian_optimization"]["bounds"],
             **optimizer_kwargs,
         )
     else:
         optimizer = SphericalBayesianOptimizer(**optimizer_kwargs)
+        configured_bounds = config["bayesian_optimization"]["bounds"]
+        hardcoded_bounds = [[1e-5, 0.1], [1e-5, 10], [1e-5, 1], [1e-5, 10], [1e-5, 1]]
+        if configured_bounds != hardcoded_bounds:
+            print(
+                "WARNING: this run's bayesian_optimization.bounds "
+                f"{configured_bounds} will be IGNORED -- "
+                "SphericalBayesianOptimizer.optimize() (the protected DRF "
+                f"method) always searches the fixed range {hardcoded_bounds}. "
+                "Set training.early_stopping/lr_scheduler/gradient_clipping "
+                "to route through SphericalBayesianOptimizerSWOT instead, "
+                "which does respect configured bounds."
+            )
 
     optimizer.optimize(n_iterations=config["bayesian_optimization"]["n_iterations"])
 

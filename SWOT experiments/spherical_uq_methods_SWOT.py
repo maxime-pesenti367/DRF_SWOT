@@ -31,6 +31,12 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from botorch.acquisition import ExpectedImprovement
+from botorch.fit import fit_gpytorch_model
+from botorch.models import SingleTaskGP
+from botorch.optim import optimize_acqf
+from gpytorch.mlls import ExactMarginalLogLikelihood
+
 from DRF.spherical_uq_methods import SphericalBayesianOptimizer
 from DRF.utils import (
     functional_regularisation_S2_batched,
@@ -38,6 +44,13 @@ from DRF.utils import (
     compute_nlpd,
     compute_crps,
 )
+
+# Same hardcoded default DRF.spherical_uq_methods.SphericalBayesianOptimizer.
+# optimize() uses -- kept here only as the fallback for bounds=None, not
+# because it should ever actually be relied on (every real config passes its
+# own bounds; see SphericalBayesianOptimizerSWOT.optimize's docstring for why
+# this needs to exist at all).
+_DEFAULT_BOUNDS = [[1e-5, 0.1], [1e-5, 10], [1e-5, 1], [1e-5, 10], [1e-5, 1]]
 
 
 def train_model_process_swot(
@@ -262,12 +275,20 @@ class SphericalBayesianOptimizerSWOT(SphericalBayesianOptimizer):
         early_stopping_patience=None,
         lr_scheduler_config=None,
         gradient_clip_max_norm=None,
+        bounds=None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.early_stopping_patience = early_stopping_patience
         self.lr_scheduler_config = lr_scheduler_config
         self.gradient_clip_max_norm = gradient_clip_max_norm
+        # [[low, high], ...] one pair per dimension (spatial_lengthscale,
+        # temporal_lengthscale, amplitude, lengthscale2, amplitude2) -- the
+        # same shape configs/exp5/*.yaml's bayesian_optimization.bounds
+        # already uses. None falls back to the same fixed default the
+        # protected optimize() hardcodes, purely for safety; every real
+        # caller should pass its own config-driven bounds explicitly.
+        self.bounds = bounds if bounds is not None else _DEFAULT_BOUNDS
 
     def objective_function(self, hyperparams):
         """
@@ -380,3 +401,59 @@ class SphericalBayesianOptimizerSWOT(SphericalBayesianOptimizer):
         })
 
         return final_loss
+
+    def optimize(self, n_iterations=10):
+        """
+        Identical to SphericalBayesianOptimizer.optimize() except the search
+        bounds come from self.bounds (config-driven) instead of a fixed
+        tensor hardcoded in the protected method's body.
+
+        This has to be a full copy, not just a small override, because
+        `bounds` is a local variable inside the protected optimize() -- it's
+        never read off self, so there's no hook to change it without
+        touching DRF/spherical_uq_methods.py. Confirmed via every existing
+        configs/exp5/*.yaml: every one of them sets bayesian_optimization.
+        bounds to values that happen to exactly match the hardcoded default,
+        which is exactly why this was never noticed -- the config value was
+        silently ignored but coincidentally matched every time, until a
+        genuinely different bounds config (locked to a single point, to
+        retrain one exact hyperparameter set) exposed it.
+        """
+        # self.bounds is [[low, high], ...] per dimension (as in the YAML);
+        # the low-tensor/high-tensor shape optimize_acqf etc. expect is the
+        # transpose of that.
+        bounds = torch.tensor(self.bounds, dtype=torch.float64, device=self.device).T
+
+        num_initial_points = self.n_initial_samples
+        initial_samples = torch.rand(num_initial_points, 5, device=self.device)
+        train_x = bounds[0] + (bounds[1] - bounds[0]) * initial_samples
+        train_y = torch.tensor(
+            [self.objective_function(x) for x in train_x],
+            dtype=torch.float64,
+            device=self.device,
+        ).unsqueeze(-1)
+        n_iterations = self.n_iterations
+
+        for i in range(n_iterations):
+            model = SingleTaskGP(train_x, train_y)
+            mll = ExactMarginalLogLikelihood(model.likelihood, model)
+            fit_gpytorch_model(mll)
+
+            EI = ExpectedImprovement(model, best_f=train_y.min().item())
+            candidate, _ = optimize_acqf(
+                EI,
+                bounds=bounds,
+                q=1,
+                num_restarts=10,
+                raw_samples=20,
+            )
+
+            new_y = torch.tensor(
+                [self.objective_function(candidate.squeeze())],
+                dtype=torch.float64,
+                device=self.device,
+            ).unsqueeze(-1)
+            train_x = torch.cat([train_x, candidate])
+            train_y = torch.cat([train_y, new_y])
+
+            print(f"Iteration {i+1}: Best loss = {train_y.min().item()}")
