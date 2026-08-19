@@ -79,7 +79,8 @@ def train_model_process_swot(
         val pass is cheap (forward-only) and separate from reg_loss's
         autograd-based computation, which stays one-shot regardless.
       - lr_scheduler_config: {"type": "cosine"} or
-        {"type": "plateau", "patience": N}.
+        {"type": "plateau", "patience": N, "factor": F} (factor defaults to
+        PyTorch's own 0.1 if omitted).
       - gradient_clip_max_norm: caps the L2 norm of all gradients combined
         before each optimizer step.
 
@@ -126,7 +127,13 @@ def train_model_process_swot(
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs)
         elif scheduler_type == "plateau":
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, mode="min", patience=lr_scheduler_config.get("patience", 2)
+                optimizer,
+                mode="min",
+                patience=lr_scheduler_config.get("patience", 2),
+                # PyTorch's own default (0.1, a 10x cut) is a much harsher
+                # single cut than cosine's continuous decay -- configurable
+                # so a run can opt for a lighter cut (e.g. 0.5) instead.
+                factor=lr_scheduler_config.get("factor", 0.1),
             )
         else:
             raise ValueError(f"Unknown lr_scheduler type: {scheduler_type!r}")
