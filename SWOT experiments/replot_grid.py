@@ -81,8 +81,10 @@ def _save_global_grid_plot(data_np, cmap, vmin, vmax, colorbar_label, save_path,
         # Natural Earth polygon dataset cartopy already ships, so this needs
         # no new dependency and no raster land/sea mask.
         ax.add_feature(cfeature.LAND, facecolor="white", edgecolor="none", zorder=2)
-    ax.coastlines()
-    ax.add_feature(cfeature.BORDERS, linestyle=":")
+    # Google-Maps-style outlines: a bolder solid coastline, dotted (not
+    # solid) country borders.
+    ax.coastlines(linewidth=1.5)
+    ax.add_feature(cfeature.BORDERS, linestyle=":", linewidth=1.2)
     cax_left = map_left + 0.15 * map_width
     cax_width = 0.7 * map_width
     cax_bottom = _BORDER_PX / _TOTAL_HEIGHT_PX + 0.35 * (_COLORBAR_HEIGHT_PX / _TOTAL_HEIGHT_PX)
