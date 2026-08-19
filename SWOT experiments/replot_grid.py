@@ -79,12 +79,17 @@ def _save_global_grid_plot(data_np, cmap, vmin, vmax, colorbar_label, save_path,
         # this is a purely visual overlay (solid fill drawn on top of the
         # data), not a NaN mask of data_np itself. cfeature.LAND is a
         # Natural Earth polygon dataset cartopy already ships, so this needs
-        # no new dependency and no raster land/sea mask.
-        ax.add_feature(cfeature.LAND, facecolor="white", edgecolor="none", zorder=2)
+        # no new dependency and no raster land/sea mask. zorder=1 (below the
+        # coastline/border zorders below) -- left at the cartopy/matplotlib
+        # default, LAND and the outlines land at the same effective zorder,
+        # and LAND (added first) can still end up painted last and hide the
+        # outlines underneath its opaque fill.
+        ax.add_feature(cfeature.LAND, facecolor="white", edgecolor="none", zorder=1)
     # Google-Maps-style outlines: a bolder solid coastline, dotted (not
-    # solid) country borders.
-    ax.coastlines(linewidth=1.5)
-    ax.add_feature(cfeature.BORDERS, linestyle=":", linewidth=1.2)
+    # solid) country borders. Explicit zorder=2 keeps both above the LAND
+    # mask fill regardless of add-order/library-default zorder ties.
+    ax.coastlines(linewidth=1.5, zorder=2)
+    ax.add_feature(cfeature.BORDERS, linestyle=":", linewidth=1.2, zorder=2)
     cax_left = map_left + 0.15 * map_width
     cax_width = 0.7 * map_width
     cax_bottom = _BORDER_PX / _TOTAL_HEIGHT_PX + 0.35 * (_COLORBAR_HEIGHT_PX / _TOTAL_HEIGHT_PX)
