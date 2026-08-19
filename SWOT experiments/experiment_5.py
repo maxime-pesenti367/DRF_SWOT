@@ -22,6 +22,7 @@ import cartopy.feature as cfeature
 import matplotlib.pyplot as plt
 import pandas as pd
 import torch
+import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.optim as optim
 import yaml
@@ -305,6 +306,91 @@ def train_final_model(
     return model, epoch_history
 
 
+def _train_final_model_and_save_worker(
+    model_class,
+    train_data,
+    val_data,
+    model_config,
+    hyperparams,
+    seed,
+    device,
+    n_epochs,
+    batch_size,
+    learning_rate,
+    early_stopping_patience,
+    lr_scheduler_config,
+    gradient_clip_max_norm,
+    spatial_X_test,
+    temporal_X_test,
+    grid_spatial_X,
+    grid_temporal_X,
+    candidate_dir,
+    normalization_stats,
+):
+    """
+    Runs in one worker process (via mp.Pool.starmap in
+    _retrain_and_save_candidate): trains one seed to completion via
+    train_final_model, then -- while the model is still resident in THIS
+    process -- predicts on the real test set and the whole-globe grid, and
+    saves its own checkpoint straight to disk. Returns only plain CPU
+    tensors/lists (epoch_history, test_preds, grid_preds), never the model
+    object itself.
+
+    This exists so the final-retrain phase can train num_models seeds
+    concurrently, mirroring the BO search phase's mp.Pool pattern, instead
+    of the strictly sequential loop this replaced. That loop couldn't just
+    be parallelized directly because train_final_model hands back a live
+    CUDA model object -- shipping a trained nn.Module back out of a spawned
+    subprocess is fragile/unsupported (the same class of problem
+    RandomPhaseFeatureMap's un-checkpointed random basis is, elsewhere in
+    this codebase). Moving every downstream use of the model (test-set
+    prediction, grid prediction, checkpointing) into the same process that
+    trained it means only plain tensors ever cross the process boundary --
+    exactly like the BO-search-phase workers (train_model_process /
+    train_model_process_swot) already do.
+    """
+    model, epoch_history = train_final_model(
+        model_class=model_class,
+        train_data=train_data,
+        val_data=val_data,
+        hyperparams=hyperparams,
+        seed=seed,
+        device=device,
+        n_epochs=n_epochs,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+        early_stopping_patience=early_stopping_patience,
+        lr_scheduler_config=lr_scheduler_config,
+        gradient_clip_max_norm=gradient_clip_max_norm,
+        **model_config,
+    )
+
+    test_loader = DataLoader(
+        TensorDataset(spatial_X_test, temporal_X_test), batch_size=batch_size, shuffle=False,
+    )
+    grid_loader = DataLoader(
+        TensorDataset(grid_spatial_X, grid_temporal_X), batch_size=batch_size, shuffle=False,
+    )
+    with torch.no_grad():
+        test_preds = torch.cat(
+            [model(bs.to(device), bt.to(device)).cpu() for bs, bt in test_loader], dim=0
+        )
+        grid_preds = torch.cat(
+            [model(bs.to(device), bt.to(device)).cpu() for bs, bt in grid_loader], dim=0
+        )
+
+    save_checkpoint(
+        path=candidate_dir / "checkpoints" / f"model_{seed}.pt",
+        state_dict=model.state_dict(),
+        model_config=model_config,
+        hyperparameters=hyperparams,
+        norm_stats=normalization_stats,
+        seed=seed,
+    )
+
+    return epoch_history, test_preds, grid_preds
+
+
 def _retrain_and_save_candidate(
     hyperparams,
     criterion_label,
@@ -332,54 +418,90 @@ def _retrain_and_save_candidate(
     previously there was always exactly one (the final_loss winner); now
     main() calls this for each of the final_loss winner and val_rmse winner
     (or just once if they're the same round -- see main()'s same_winner
-    check)."""
+    check).
+
+    Trains all num_models seeds concurrently via mp.Pool, capped at
+    training.max_parallel_models (same knob the BO search phase already
+    uses) -- see _train_final_model_and_save_worker's docstring for why
+    this needs a dedicated worker function rather than just parallelizing
+    train_final_model directly."""
     candidate_dir = results_dir / criterion_label
     candidate_dir.mkdir(parents=True, exist_ok=True)
 
+    batch_size = config["training"]["batch_size"]
     num_models = config["training"]["num_models"]
-    final_models = []
-    training_curve_records = []
-    for seed in range(num_models):
-        model, epoch_history = train_final_model(
-            model_class=DeepMaternRandomPhaseS2RFFNN,
-            train_data=train_dataset,
-            val_data=val_dataset,
-            hyperparams=hyperparams,
-            seed=seed,
-            device=device,
-            n_epochs=config["training"]["num_epochs"],
-            batch_size=config["training"]["batch_size"],
-            learning_rate=config["training"]["learning_rate"],
-            early_stopping_patience=early_stopping_patience,
-            lr_scheduler_config=lr_scheduler_config,
-            gradient_clip_max_norm=gradient_clip_max_norm,
-            **model_config,
-        )
-        final_models.append(model)
-        training_curve_records.extend(epoch_history)
+    max_parallel_models = config["training"].get("max_parallel_models") or num_models
 
-    # --- Predict on the REAL held-out test set with this candidate's ensemble ---
-    # Batched (not one giant forward pass) -- large test sets (e.g. exp3's
-    # ~1.2M-row test split) blow up GPU memory otherwise: the spherical
-    # layer's RandomPhaseFeatureMap materializes a (hidden_dim, N) tensor
-    # internally, which for hidden_dim=1000 and N in the millions is
-    # multiple GiB in one allocation.
-    test_loader = DataLoader(
-        TensorDataset(spatial_X_test, temporal_X_test),
-        batch_size=config["training"]["batch_size"],
-        shuffle=False,
+    # --- Whole-globe grid, built once on CPU and passed into every worker ---
+    # (the forward pass over this grid used to happen after training,
+    # against the still-in-memory models; now each worker does its own pass
+    # while its model is still resident there instead, so the grid needs to
+    # travel INTO the worker as plain CPU tensors, rather than the trained
+    # model traveling out). Spatial inputs are raw radians here (never
+    # z-scored), so no normalization needs to be applied/reversed for the
+    # grid coordinates.
+    grid_lons_deg = torch.linspace(-180, 180, _NUM_LONGS)
+    grid_lats_deg = torch.linspace(-90, 90, _NUM_LATS)
+    grid_lon_grid, grid_lat_grid = torch.meshgrid(grid_lons_deg, grid_lats_deg, indexing="ij")
+    grid_spatial_X = torch.stack(
+        [torch.deg2rad(grid_lon_grid.reshape(-1)), torch.deg2rad(grid_lat_grid.reshape(-1))],
+        dim=1,
     )
-    with torch.no_grad():
-        per_model_preds_list = []
-        for model in final_models:
-            batch_preds = []
-            for batch_spatial, batch_temporal in test_loader:
-                batch_preds.append(
-                    model(batch_spatial.to(device), batch_temporal.to(device)).cpu()
-                )
-            per_model_preds_list.append(torch.cat(batch_preds, dim=0))
-        per_model_preds = torch.stack(per_model_preds_list)  # [num_models, N_test, 1]
+    # Normalized time = 0.0 -> the training set's mean timestamp (temporal
+    # data is z-scored using train-split mean/std; see normalization_stats).
+    grid_temporal_X = torch.zeros(grid_spatial_X.shape[0], 1)
 
+    if mp.get_start_method(allow_none=True) != "spawn":
+        mp.set_start_method("spawn", force=True)
+    args_list = [
+        (
+            DeepMaternRandomPhaseS2RFFNN,
+            train_dataset,
+            val_dataset,
+            model_config,
+            hyperparams,
+            seed,
+            device,
+            config["training"]["num_epochs"],
+            batch_size,
+            config["training"]["learning_rate"],
+            early_stopping_patience,
+            lr_scheduler_config,
+            gradient_clip_max_norm,
+            spatial_X_test,
+            temporal_X_test,
+            grid_spatial_X,
+            grid_temporal_X,
+            candidate_dir,
+            normalization_stats,
+        )
+        for seed in range(num_models)
+    ]
+
+    # Batched within each worker (not one giant forward pass) -- large test
+    # sets (e.g. exp3's ~1.2M-row test split) blow up GPU memory otherwise:
+    # the spherical layer's RandomPhaseFeatureMap materializes a
+    # (hidden_dim, N) tensor internally, which for hidden_dim=1000 and N in
+    # the millions is multiple GiB in one allocation. Using close()+join()
+    # instead of the Pool context manager (which calls terminate()) so
+    # worker processes -- and their CUDA contexts -- are torn down
+    # gracefully, same reasoning as the BO search phase's pool.
+    pool = mp.Pool(processes=max_parallel_models)
+    try:
+        results = pool.starmap(_train_final_model_and_save_worker, args_list)
+    finally:
+        pool.close()
+        pool.join()
+
+    training_curve_records = []
+    per_model_preds_list = []
+    grid_per_model_preds_list = []
+    for epoch_history, test_preds, grid_preds in results:
+        training_curve_records.extend(epoch_history)
+        per_model_preds_list.append(test_preds)
+        grid_per_model_preds_list.append(grid_preds)
+
+    per_model_preds = torch.stack(per_model_preds_list)  # [num_models, N_test, 1]
     mean_pred = per_model_preds.mean(dim=0)
     var_pred = per_model_preds.var(dim=0)
 
@@ -401,54 +523,19 @@ def _retrain_and_save_candidate(
     torch.save(var_pred, candidate_dir / "final_variance.pt")
     torch.save(per_model_preds, candidate_dir / "individual_final_predictions.pt")
 
-    for seed, model in enumerate(final_models):
-        save_checkpoint(
-            path=candidate_dir / "checkpoints" / f"model_{seed}.pt",
-            state_dict=model.state_dict(),
-            model_config=model_config,
-            hyperparameters=hyperparams,
-            norm_stats=normalization_stats,
-            seed=seed,
-        )
+    # Checkpoints are already saved -- each worker wrote its own
+    # model_{seed}.pt directly, see _train_final_model_and_save_worker.
 
     # --- Whole-globe grid snapshot ---
     # Dense global grid + imshow, matching exp3/exp4's whole-globe snapshot
     # style rather than scattering over the sparse real test-set points --
     # judged more informative for visualizing overall model behaviour, with
     # real accuracy (RMSE/NLPD/CRPS above) already handled separately against
-    # the genuine held-out test set. No retrain needed here: final_models are
-    # already in memory (and checkpointed to disk above), so we just
-    # forward-pass those over the grid. Spatial inputs are raw radians here
-    # (never z-scored), so no normalization needs to be applied/reversed for
-    # the grid coordinates either.
+    # the genuine held-out test set. Predictions already computed per-worker
+    # above (grid_per_model_preds_list) -- just reassembling them here, no
+    # forward pass in this process.
     print(f"[{criterion_label}] Building global grid for whole-globe snapshot...")
-    grid_lons_deg = torch.linspace(-180, 180, _NUM_LONGS)
-    grid_lats_deg = torch.linspace(-90, 90, _NUM_LATS)
-    grid_lon_grid, grid_lat_grid = torch.meshgrid(grid_lons_deg, grid_lats_deg, indexing="ij")
-    grid_spatial_X = torch.stack(
-        [torch.deg2rad(grid_lon_grid.reshape(-1)), torch.deg2rad(grid_lat_grid.reshape(-1))],
-        dim=1,
-    ).to(device)
-    # Normalized time = 0.0 -> the training set's mean timestamp (temporal
-    # data is z-scored using train-split mean/std; see normalization_stats).
-    grid_temporal_X = torch.zeros(grid_spatial_X.shape[0], 1, device=device)
-
-    grid_loader = DataLoader(
-        TensorDataset(grid_spatial_X.cpu(), grid_temporal_X.cpu()),
-        batch_size=config["training"]["batch_size"],
-        shuffle=False,
-    )
-    with torch.no_grad():
-        grid_per_model_preds_list = []
-        for model in final_models:
-            batch_preds = []
-            for batch_spatial, batch_temporal in grid_loader:
-                batch_preds.append(
-                    model(batch_spatial.to(device), batch_temporal.to(device)).cpu()
-                )
-            grid_per_model_preds_list.append(torch.cat(batch_preds, dim=0))
-        grid_per_model_preds = torch.stack(grid_per_model_preds_list)  # [num_models, N_grid, 1]
-
+    grid_per_model_preds = torch.stack(grid_per_model_preds_list)  # [num_models, N_grid, 1]
     grid_mean_pred = grid_per_model_preds.mean(dim=0).squeeze().reshape(_NUM_LONGS, _NUM_LATS)
     grid_var_pred = grid_per_model_preds.var(dim=0).squeeze().reshape(_NUM_LONGS, _NUM_LATS)
     print(f"[{criterion_label}] Global grid predictions computed.")
