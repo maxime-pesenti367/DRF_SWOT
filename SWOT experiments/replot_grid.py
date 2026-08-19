@@ -88,7 +88,7 @@ def _save_global_grid_plot(data_np, cmap, vmin, vmax, colorbar_label, save_path,
     # Google-Maps-style outlines: a bolder solid coastline, dotted (not
     # solid) country borders. Explicit zorder=2 keeps both above the LAND
     # mask fill regardless of add-order/library-default zorder ties.
-    ax.coastlines(linewidth=1.2, zorder=2)
+    ax.coastlines(linewidth=1.0, zorder=2)
     ax.add_feature(cfeature.BORDERS, linestyle=":", linewidth=1.0, zorder=2)
     cax_left = map_left + 0.15 * map_width
     cax_width = 0.7 * map_width
