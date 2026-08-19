@@ -12,7 +12,7 @@ seed: 42
 
 model:
   name: 'DeepMaternRandomPhaseS2RFFNN'
-  num_layers: 4
+  num_layers: 3
   hidden_dim: 1000
   bottleneck_dim: 128
   output_dim: 1
@@ -49,7 +49,6 @@ training:
   early_stopping:
     patience: 3
   lr_scheduler:
-    type: plateau
-    factor: 0.5
+    type: cosine
   gradient_clipping:
     max_norm: 1.0
