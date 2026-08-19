@@ -44,7 +44,7 @@ training:
   # bounds peak VRAM to ~1x a single model instead of ~5x. Set to 1 for
   # fully sequential (slowest, safest); raise it (e.g. to num_models) if
   # you land on a GPU with enough headroom to go faster.
-  max_parallel_models: 3
+  max_parallel_models: 5
   p_weight: 0.95
   early_stopping:
     patience: 3
