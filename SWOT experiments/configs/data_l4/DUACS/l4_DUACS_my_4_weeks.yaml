@@ -3,8 +3,8 @@ name: l4_DUACS_my_4_weeks
 l4_product: DUACS   # which L4 product family -- only "DUACS" (CMEMS) is implemented so far; NASA "MEASURES" etc. planned later
 product_type: my    # "my" -> SEALEVEL_GLO_PHY_L4_MY_008_047, "nrt" -> SEALEVEL_GLO_PHY_L4_NRT_008_046
 
-start_date: "2026-06-01"
-end_date: "2026-06-16"
+start_date: "2025-05-18"
+end_date: "2025-06-15"
 variables: ["sla"]
 
 # Optional -- restrict the fetch to a lon/lat box instead of the full globe.
