@@ -449,6 +449,9 @@ def _retrain_and_save_candidate(
     )
     # Normalized time = 0.0 -> the training set's mean timestamp (temporal
     # data is z-scored using train-split mean/std; see normalization_stats).
+    # Deliberately not shown in the colorbar label below -- see
+    # replot_grid.py's --date option for predicting (and labeling) an exact,
+    # deliberately-chosen timestamp instead.
     grid_temporal_X = torch.zeros(grid_spatial_X.shape[0], 1)
 
     if mp.get_start_method(allow_none=True) != "spawn":
@@ -542,11 +545,11 @@ def _retrain_and_save_candidate(
 
     _save_global_grid_plot(
         grid_mean_pred.T.numpy(), cmap="coolwarm", vmin=-0.25, vmax=0.25,
-        colorbar_label="Predicted SLA (m)", save_path=candidate_dir / "final_mean.png",
+        colorbar_label="DRF Predicted SLA (m)", save_path=candidate_dir / "final_mean.png",
     )
     _save_global_grid_plot(
         grid_var_pred.T.numpy(), cmap="viridis", vmin=0, vmax=0.2,
-        colorbar_label="Variance", save_path=candidate_dir / "final_variance.png",
+        colorbar_label="DRF Variance", save_path=candidate_dir / "final_variance.png",
     )
 
     plot_training_curve(candidate_dir)
