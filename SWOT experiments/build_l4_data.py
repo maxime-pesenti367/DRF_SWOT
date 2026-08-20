@@ -92,7 +92,7 @@ def _save_global_grid_plot(data_np, cmap, vmin, vmax, colorbar_label, save_path,
     plt.close(fig)
 
 
-def _save_overview_plot(ds, variable, save_path, time_index=None):
+def _save_overview_plot(ds, variable, l4_product, save_path, time_index=None):
     """Saves a single day's global `variable` snapshot, at the same
     2880x1440/bordered/no-resampling rendering as experiment_5.py's
     final_mean.png, so it can be compared directly against a model's own
@@ -103,7 +103,11 @@ def _save_overview_plot(ds, variable, save_path, time_index=None):
         time_index = ds.sizes["time"] // 2
     day = ds.isel(time=time_index)
     data_np = day[variable].values  # (latitude, longitude), ascending both axes
-    time_str = str(day["time"].values)[:10]
+    # [:16] keeps date + HH:MM (e.g. "2025-06-01T00:00") -- read from the
+    # real timestamp rather than hardcoding "00:00", so this stays correct
+    # even if a future L4 product's daily grids aren't stamped at exact
+    # midnight the way DUACS's are.
+    time_str = str(day["time"].values)[:16].replace("-", "/").replace("T", " ")
 
     # Pixel-center coordinates -> cell-edge extent (each pixel's true
     # footprint is +/- half a grid step past its center coordinate). Using
@@ -116,7 +120,7 @@ def _save_overview_plot(ds, variable, save_path, time_index=None):
 
     _save_global_grid_plot(
         data_np, cmap="coolwarm", vmin=_SLA_VMIN, vmax=_SLA_VMAX,
-        colorbar_label=f"{variable.upper()} (m) -- {time_str}", save_path=save_path,
+        colorbar_label=f"{l4_product} {variable.upper()} (m) -- {time_str}", save_path=save_path,
         data_extent=data_extent,
     )
 
@@ -139,8 +143,9 @@ def main():
         drive_base, _ = get_drive_base_path()
         zarr_path, _, _ = zarr_path_for_config(config, drive_base)
         variable = config["variables"][0]
+        l4_product = config.get("l4_product", "DUACS")
         save_path = zarr_path.parent / f"{zarr_path.stem}_overview.png"
-        _save_overview_plot(ds, variable, save_path)
+        _save_overview_plot(ds, variable, l4_product, save_path)
         print(f"Saved overview plot to {save_path}")
 
 
