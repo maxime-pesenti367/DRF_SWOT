@@ -18,6 +18,7 @@ from pathlib import Path
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import matplotlib.pyplot as plt
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -104,6 +105,46 @@ def to_float(x):
     return x.item() if torch.is_tensor(x) else x
 
 
+def _predict_and_save_grid(final_models, grid_spatial_X, grid_temporal_X, device, date_label, mean_path, variance_path, mask_land):
+    """Forward-passes final_models over the given grid and saves the mean/
+    variance snapshots. date_label is the exact string to show in the
+    colorbar -- None keeps the label ambiguous (matches experiment_5.py's
+    own final_mean.png/final_variance.png, which likewise never claims a
+    specific timestamp, only "the training set's mean", to avoid the two
+    ever silently disagreeing); a real string (from --date) states plainly
+    which timestamp this particular snapshot was predicted at."""
+    grid_loader = DataLoader(
+        TensorDataset(grid_spatial_X, grid_temporal_X),
+        batch_size=_GRID_BATCH_SIZE,
+        shuffle=False,
+    )
+    with torch.no_grad():
+        grid_per_model_preds_list = []
+        for model in final_models:
+            batch_preds = []
+            for batch_spatial, batch_temporal in grid_loader:
+                batch_preds.append(
+                    model(batch_spatial.to(device), batch_temporal.to(device)).cpu()
+                )
+            grid_per_model_preds_list.append(torch.cat(batch_preds, dim=0))
+        grid_per_model_preds = torch.stack(grid_per_model_preds_list)  # [num_models, N_grid, 1]
+
+    grid_mean_pred = grid_per_model_preds.mean(dim=0).squeeze().reshape(_NUM_LONGS, _NUM_LATS)
+    grid_var_pred = grid_per_model_preds.var(dim=0).squeeze().reshape(_NUM_LONGS, _NUM_LATS)
+
+    label_suffix = f" -- {date_label}" if date_label else ""
+    _save_global_grid_plot(
+        grid_mean_pred.T.numpy(), cmap="coolwarm", vmin=-0.25, vmax=0.25,
+        colorbar_label=f"DRF Predicted SLA (m){label_suffix}", save_path=mean_path,
+        mask_land=mask_land,
+    )
+    _save_global_grid_plot(
+        grid_var_pred.T.numpy(), cmap="viridis", vmin=0, vmax=0.2,
+        colorbar_label=f"DRF Variance{label_suffix}", save_path=variance_path,
+        mask_land=mask_land,
+    )
+
+
 def load_ensemble(checkpoints_dir, device):
     checkpoint_paths = sorted(checkpoints_dir.glob("model_*.pt"))
     if not checkpoint_paths:
@@ -114,8 +155,18 @@ def load_ensemble(checkpoints_dir, device):
         )
 
     models = []
+    temporal_mean = None
+    temporal_std = None
     for path in checkpoint_paths:
         checkpoint = load_checkpoint(path)
+        if temporal_mean is None:
+            # Raw Unix-seconds mean/std the training split's temporal column
+            # was z-scored with (saved by build_experiment_data.py) -- needed
+            # to turn a user-supplied --date into the normalized value this
+            # model actually expects. Every ensemble member was trained on
+            # the same split, so any one checkpoint's stats are representative.
+            temporal_mean = checkpoint["normalization_stats"]["temporal_mean"].item()
+            temporal_std = checkpoint["normalization_stats"]["temporal_std"].item()
         (
             spatial_lengthscale,
             temporal_lengthscale,
@@ -149,7 +200,7 @@ def load_ensemble(checkpoints_dir, device):
         models.append(model)
 
     print(f"Loaded {len(models)} model(s) from {checkpoints_dir}")
-    return models
+    return models, temporal_mean, temporal_std
 
 
 if __name__ == "__main__":
@@ -167,6 +218,18 @@ if __name__ == "__main__":
         "--mask-land", action="store_true",
         help="Cover land with a solid white overlay (Natural Earth polygons via cartopy) -- purely visual, the model still predicts a value there.",
     )
+    parser.add_argument(
+        "--date", type=str, default=None,
+        help=(
+            "Predict at this exact timestamp instead of the training set's "
+            "mean, e.g. '2025-06-01 00:00'. Writes SEPARATE "
+            "final_mean_<date>.png/final_variance_<date>.png files -- does "
+            "NOT touch/regenerate the existing final_mean.png/"
+            "final_variance.png (those stay as experiment_5.py originally "
+            "produced them). A date far outside the model's training range "
+            "is extrapolation."
+        ),
+    )
     args = parser.parse_args()
 
     results_dir = Path(args.results_dir)
@@ -174,48 +237,63 @@ if __name__ == "__main__":
         results_dir = SCRIPT_DIR / results_dir
     device = torch.device(args.device)
 
-    final_models = load_ensemble(results_dir / "checkpoints", device)
+    final_models, temporal_mean, temporal_std = load_ensemble(results_dir / "checkpoints", device)
 
-    print("Building global grid for whole-globe snapshot...")
-    grid_lons_deg = torch.linspace(-180, 180, _NUM_LONGS)
-    grid_lats_deg = torch.linspace(-90, 90, _NUM_LATS)
-    grid_lon_grid, grid_lat_grid = torch.meshgrid(grid_lons_deg, grid_lats_deg, indexing="ij")
-    grid_spatial_X = torch.stack(
-        [torch.deg2rad(grid_lon_grid.reshape(-1)), torch.deg2rad(grid_lat_grid.reshape(-1))],
-        dim=1,
-    )
-    # Normalized time = 0.0 -> the training set's mean timestamp.
-    grid_temporal_X = torch.zeros(grid_spatial_X.shape[0], 1)
+    if args.date is None:
+        print("Building global grid for whole-globe snapshot...")
+        grid_lons_deg = torch.linspace(-180, 180, _NUM_LONGS)
+        grid_lats_deg = torch.linspace(-90, 90, _NUM_LATS)
+        grid_lon_grid, grid_lat_grid = torch.meshgrid(grid_lons_deg, grid_lats_deg, indexing="ij")
+        grid_spatial_X = torch.stack(
+            [torch.deg2rad(grid_lon_grid.reshape(-1)), torch.deg2rad(grid_lat_grid.reshape(-1))],
+            dim=1,
+        )
+        # Normalized time = 0.0 -> the training set's mean timestamp.
+        grid_temporal_X = torch.zeros(grid_spatial_X.shape[0], 1)
 
-    grid_loader = DataLoader(
-        TensorDataset(grid_spatial_X, grid_temporal_X),
-        batch_size=_GRID_BATCH_SIZE,
-        shuffle=False,
-    )
-    with torch.no_grad():
-        grid_per_model_preds_list = []
-        for model in final_models:
-            batch_preds = []
-            for batch_spatial, batch_temporal in grid_loader:
-                batch_preds.append(
-                    model(batch_spatial.to(device), batch_temporal.to(device)).cpu()
-                )
-            grid_per_model_preds_list.append(torch.cat(batch_preds, dim=0))
-        grid_per_model_preds = torch.stack(grid_per_model_preds_list)  # [num_models, N_grid, 1]
+        _predict_and_save_grid(
+            final_models, grid_spatial_X, grid_temporal_X, device, None,
+            results_dir / "final_mean.png", results_dir / "final_variance.png", args.mask_land,
+        )
+        print("Global grid predictions computed.")
+        print(f"Regenerated final_mean.png and final_variance.png in {results_dir}")
+    else:
+        try:
+            target_timestamp = pd.Timestamp(args.date)
+        except ValueError as e:
+            raise ValueError(
+                f"Could not parse --date '{args.date}' -- expected a format "
+                f"like '2025-06-01 00:00'"
+            ) from e
+        target_raw_seconds = target_timestamp.timestamp()
+        target_normalized = (target_raw_seconds - temporal_mean) / (temporal_std + 1e-8)
+        # Slash date / colon time, matching build_l4_data.py's L4 overview
+        # plot labels (e.g. "DUACS SLA (m) -- 2025/06/01 00:00") -- derived
+        # from the parsed timestamp (not a raw string replace on args.date)
+        # so it's consistently formatted regardless of how --date was typed.
+        date_label = target_timestamp.strftime("%Y/%m/%d %H:%M")
 
-    grid_mean_pred = grid_per_model_preds.mean(dim=0).squeeze().reshape(_NUM_LONGS, _NUM_LATS)
-    grid_var_pred = grid_per_model_preds.var(dim=0).squeeze().reshape(_NUM_LONGS, _NUM_LATS)
-    print("Global grid predictions computed.")
+        print(f"Building global grid for whole-globe snapshot at {args.date}...")
+        grid_lons_deg = torch.linspace(-180, 180, _NUM_LONGS)
+        grid_lats_deg = torch.linspace(-90, 90, _NUM_LATS)
+        grid_lon_grid, grid_lat_grid = torch.meshgrid(grid_lons_deg, grid_lats_deg, indexing="ij")
+        grid_spatial_X = torch.stack(
+            [torch.deg2rad(grid_lon_grid.reshape(-1)), torch.deg2rad(grid_lat_grid.reshape(-1))],
+            dim=1,
+        )
+        grid_temporal_X = torch.full((grid_spatial_X.shape[0], 1), target_normalized, dtype=torch.float32)
 
-    _save_global_grid_plot(
-        grid_mean_pred.T.numpy(), cmap="coolwarm", vmin=-0.25, vmax=0.25,
-        colorbar_label="Predicted SLA (m)", save_path=results_dir / "final_mean.png",
-        mask_land=args.mask_land,
-    )
-    _save_global_grid_plot(
-        grid_var_pred.T.numpy(), cmap="viridis", vmin=0, vmax=0.2,
-        colorbar_label="Variance", save_path=results_dir / "final_variance.png",
-        mask_land=args.mask_land,
-    )
-
-    print(f"Regenerated final_mean.png and final_variance.png in {results_dir}")
+        # Filesystem-safe (Windows disallows ":") while keeping the date
+        # readable, e.g. "2025-06-01 00:00" -> "2025-06-01_00-00". Derived
+        # from the same parsed target_timestamp as date_label, so the
+        # filename is consistently zero-padded regardless of how --date was
+        # typed (e.g. "2025-6-1 0:0" still produces "2025-06-01_00-00").
+        date_tag = target_timestamp.strftime("%Y-%m-%d_%H-%M")
+        mean_path = results_dir / f"final_mean_{date_tag}.png"
+        variance_path = results_dir / f"final_variance_{date_tag}.png"
+        _predict_and_save_grid(
+            final_models, grid_spatial_X, grid_temporal_X, device, date_label,
+            mean_path, variance_path, args.mask_land,
+        )
+        print("Global grid predictions computed.")
+        print(f"Saved {mean_path.name} and {variance_path.name} in {results_dir}")
