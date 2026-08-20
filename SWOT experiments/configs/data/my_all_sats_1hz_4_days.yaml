@@ -1,0 +1,17 @@
+name: my_all_sats_1hz_4_days
+
+product_type: my
+satellites: all
+freq: 1hz
+
+start_date: "2025-05-30"
+end_date: "2025-06-03"
+variables: ["sla_filtered"]
+
+splits:
+  - name: random
+    method: random
+    train: 0.70
+    val: 0.15
+    test: 0.15
+    seed: 42
