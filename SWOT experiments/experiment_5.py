@@ -447,12 +447,23 @@ def _retrain_and_save_candidate(
         [torch.deg2rad(grid_lon_grid.reshape(-1)), torch.deg2rad(grid_lat_grid.reshape(-1))],
         dim=1,
     )
-    # Normalized time = 0.0 -> the training set's mean timestamp (temporal
-    # data is z-scored using train-split mean/std; see normalization_stats).
+    # Default grid-snapshot timestamp: the train split's own mean timestamp.
+    # When the data was z-scored (temporal_znormalised True -- see
+    # normalization_stats), 0.0 IS that mean, so zeros works directly. When
+    # time_znormalised was False at build_experiment_data.py time,
+    # temporal_X is raw days-since-2000 (not z-scored), so 0.0 would mean
+    # the year 2000 instead -- the actual stored mean has to be fed in.
     # Deliberately not shown in the colorbar label below -- see
     # replot_grid.py's --date option for predicting (and labeling) an exact,
     # deliberately-chosen timestamp instead.
-    grid_temporal_X = torch.zeros(grid_spatial_X.shape[0], 1)
+    if normalization_stats.get("temporal_znormalised", True):
+        grid_temporal_X = torch.zeros(grid_spatial_X.shape[0], 1)
+    else:
+        grid_temporal_X = torch.full(
+            (grid_spatial_X.shape[0], 1),
+            normalization_stats["temporal_mean"].item(),
+            dtype=torch.float32,
+        )
 
     if mp.get_start_method(allow_none=True) != "spawn":
         mp.set_start_method("spawn", force=True)

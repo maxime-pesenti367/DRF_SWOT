@@ -33,6 +33,11 @@ _GRID_BATCH_SIZE = 8000
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
+# Kept in sync with build_experiment_data.py's own copy of this same
+# constant -- the reference epoch for the unnormalized (time_znormalised:
+# false) temporal representation, e.g. 2025-06-01 00:00 -> 9283.0 days.
+TEMPORAL_REFERENCE_EPOCH = pd.Timestamp("2000-01-01")
+
 # Kept in sync with experiment_5.py's copy of these same constants/helper --
 # see that file for the full rationale (matplotlib's default figure sizing
 # silently resamples the grid to fit a fixed pixel budget regardless of
@@ -157,16 +162,22 @@ def load_ensemble(checkpoints_dir, device):
     models = []
     temporal_mean = None
     temporal_std = None
+    temporal_znormalised = None
     for path in checkpoint_paths:
         checkpoint = load_checkpoint(path)
         if temporal_mean is None:
-            # Raw Unix-seconds mean/std the training split's temporal column
-            # was z-scored with (saved by build_experiment_data.py) -- needed
-            # to turn a user-supplied --date into the normalized value this
-            # model actually expects. Every ensemble member was trained on
-            # the same split, so any one checkpoint's stats are representative.
+            # Raw mean/std the training split's temporal column was
+            # summarized with (saved by build_experiment_data.py) -- in
+            # seconds-since-1970 if z-scored, or days-since-2000 if not (see
+            # temporal_znormalised). Needed to turn a user-supplied --date
+            # into whatever this model actually expects. Every ensemble
+            # member was trained on the same split, so any one checkpoint's
+            # stats are representative. .get(..., True) defaults to the
+            # z-scored assumption for checkpoints saved before this flag
+            # existed -- the only behaviour there ever was until now.
             temporal_mean = checkpoint["normalization_stats"]["temporal_mean"].item()
             temporal_std = checkpoint["normalization_stats"]["temporal_std"].item()
+            temporal_znormalised = checkpoint["normalization_stats"].get("temporal_znormalised", True)
         (
             spatial_lengthscale,
             temporal_lengthscale,
@@ -200,7 +211,7 @@ def load_ensemble(checkpoints_dir, device):
         models.append(model)
 
     print(f"Loaded {len(models)} model(s) from {checkpoints_dir}")
-    return models, temporal_mean, temporal_std
+    return models, temporal_mean, temporal_std, temporal_znormalised
 
 
 if __name__ == "__main__":
@@ -237,7 +248,9 @@ if __name__ == "__main__":
         results_dir = SCRIPT_DIR / results_dir
     device = torch.device(args.device)
 
-    final_models, temporal_mean, temporal_std = load_ensemble(results_dir / "checkpoints", device)
+    final_models, temporal_mean, temporal_std, temporal_znormalised = load_ensemble(
+        results_dir / "checkpoints", device
+    )
 
     if args.date is None:
         print("Building global grid for whole-globe snapshot...")
@@ -248,8 +261,16 @@ if __name__ == "__main__":
             [torch.deg2rad(grid_lon_grid.reshape(-1)), torch.deg2rad(grid_lat_grid.reshape(-1))],
             dim=1,
         )
-        # Normalized time = 0.0 -> the training set's mean timestamp.
-        grid_temporal_X = torch.zeros(grid_spatial_X.shape[0], 1)
+        # Default timestamp: the training set's mean. Normalized time = 0.0
+        # IS that mean when the data was z-scored; when time_znormalised was
+        # False at build_experiment_data.py time, temporal_X is raw
+        # days-since-2000, so 0.0 would mean the year 2000 instead -- the
+        # actual stored mean has to be fed in (mirrors experiment_5.py's
+        # own copy of this same branch).
+        if temporal_znormalised:
+            grid_temporal_X = torch.zeros(grid_spatial_X.shape[0], 1)
+        else:
+            grid_temporal_X = torch.full((grid_spatial_X.shape[0], 1), temporal_mean, dtype=torch.float32)
 
         _predict_and_save_grid(
             final_models, grid_spatial_X, grid_temporal_X, device, None,
@@ -265,8 +286,14 @@ if __name__ == "__main__":
                 f"Could not parse --date '{args.date}' -- expected a format "
                 f"like '2025-06-01 00:00'"
             ) from e
-        target_raw_seconds = target_timestamp.timestamp()
-        target_normalized = (target_raw_seconds - temporal_mean) / (temporal_std + 1e-8)
+        if temporal_znormalised:
+            target_raw_seconds = target_timestamp.timestamp()
+            target_normalized = (target_raw_seconds - temporal_mean) / (temporal_std + 1e-8)
+        else:
+            # No saved parameters needed here at all -- TEMPORAL_REFERENCE_EPOCH
+            # is a fixed constant, not derived from this (or any) dataset, so
+            # this conversion is the same regardless of which model trained it.
+            target_normalized = (target_timestamp - TEMPORAL_REFERENCE_EPOCH) / pd.Timedelta(days=1)
         # Slash date / colon time, matching build_l4_data.py's L4 overview
         # plot labels (e.g. "DUACS SLA (m) -- 2025/06/01 00:00") -- derived
         # from the parsed timestamp (not a raw string replace on args.date)
