@@ -115,7 +115,7 @@ def aggregate_results():
             })
 
     summary_df = pd.DataFrame(rows, columns=RESULTS_SUMMARY_COLUMNS)
-    summary_df = summary_df.sort_values("test_rmse", ascending=False)
+    summary_df = summary_df.sort_values("test_rmse", ascending=True)
     summary_df.to_csv(RESULTS_SUMMARY_OUTPUT_PATH, index=False)
 
     print(f"Aggregated {len(rows)} row(s) from {len(csv_paths) - len(skipped)} experiment(s).")
@@ -141,6 +141,7 @@ def aggregate_search_history():
     # alphabetizing; missing columns (val_bias/val_variance_of_diff/
     # is_val_rmse_winner, absent on pre-SWOT-optimizer runs) are filled NaN.
     history_df = pd.concat(dfs, ignore_index=True, sort=False)
+    history_df = history_df.sort_values("val_rmse", ascending=True)
     history_df.to_csv(SEARCH_HISTORY_OUTPUT_PATH, index=False)
 
     print(f"Aggregated {len(history_df)} row(s) from {len(csv_paths)} experiment(s).")
