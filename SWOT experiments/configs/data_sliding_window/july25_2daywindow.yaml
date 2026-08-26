@@ -1,0 +1,18 @@
+name: july25_2daywindow
+product_type: my
+satellites: all
+freq: 1hz
+
+start_date: "2025-07-01"
+end_date: "2025-07-31"
+sliding_day_range: 2
+step_days: 1
+variables: ["sla_filtered"]
+
+splits:
+  - name: random
+    method: random
+    train: 0.70
+    val: 0.15
+    test: 0.15
+    seed: 42
