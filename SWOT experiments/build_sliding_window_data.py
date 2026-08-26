@@ -121,6 +121,7 @@ def main():
     day_configs = list(generate_day_configs(master_config))
     print(f"Sliding-window config '{master_config['name']}': {len(day_configs)} target day(s).")
 
+    failed_days = []
     for i, (date_str, day_config) in enumerate(day_configs, 1):
         day_config_path = generated_dir / f"{date_str}.yaml"
         with open(day_config_path, "w") as f:
@@ -134,9 +135,21 @@ def main():
             f"[{i}/{len(day_configs)}] {date_str}: building "
             f"(window {day_config['start_date']} to {day_config['end_date']})..."
         )
-        build_experiment_data(day_config, plot=args.plot)
+        # One day's fetch failing (e.g. a transient Copernicus API hiccup, or
+        # a Windows file-lock race in zarr's async writer -- both observed
+        # live) shouldn't take down the other ~30 days in the same run.
+        # Left unbuilt, a failed day is picked up correctly on the next
+        # invocation by the skip-if-exists check above -- no special
+        # handling needed beyond not crashing here.
+        try:
+            build_experiment_data(day_config, plot=args.plot)
+        except Exception as e:
+            print(f"[{i}/{len(day_configs)}] {date_str}: FAILED -- {e!r}")
+            failed_days.append(date_str)
 
-    print("Done.")
+    print(f"\nDone. {len(day_configs) - len(failed_days)}/{len(day_configs)} day(s) built.")
+    if failed_days:
+        print(f"Failed day(s) (re-run this script to retry them): {failed_days}")
 
 
 if __name__ == "__main__":
