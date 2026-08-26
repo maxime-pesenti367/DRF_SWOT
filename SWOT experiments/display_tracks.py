@@ -1,7 +1,25 @@
+import math
+
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 import xarray as xr
+
+
+# Formats a point count at 3 significant figures with a magnitude suffix,
+# e.g. 1354221 -> "1.35M", 45231 -> "45.2K", 892 -> "892". Rounds to 3 sig
+# figs *before* picking a suffix (not via "{:.3g}" on the raw count) so a
+# value like 999999 correctly promotes to "1M" instead of round-tripping
+# through scientific notation ("1e+03K").
+def _format_point_count(n):
+    if n == 0:
+        return "0"
+    magnitude = math.floor(math.log10(abs(n)))
+    rounded = round(n, -magnitude + 2)
+    for threshold, suffix in [(1e9, "B"), (1e6, "M"), (1e3, "K")]:
+        if abs(rounded) >= threshold:
+            return f"{rounded / threshold:g}{suffix}"
+    return f"{rounded:g}"
 
 
 # Takes in ds, returns spatial_density as well as mesh grid, used for drawing heatmap of track density
@@ -91,7 +109,7 @@ def display_1D_tracks(ssha, experiment_name, dot_size=5, vmax=0.2, outlier_thres
 
     t_min = pd.to_datetime(time.min().values).strftime('%Y-%m-%d %H:%M:%S')
     t_max = pd.to_datetime(time.max().values).strftime('%Y-%m-%d %H:%M:%S')
-    fig.suptitle(f'{experiment_name} SSHA from "{t_min}" to "{t_max}"')
+    fig.suptitle(f'{experiment_name} SSHA from "{t_min}" to "{t_max}" (N={_format_point_count(len(ssha))})')
 
     # A: Time series
     sc2 = axes['A'].scatter(time[~nan_mask], ssha[~nan_mask], c=ssha[~nan_mask], vmin=vmin, vmax=vmax, cmap=cmap, s=dot_size)
