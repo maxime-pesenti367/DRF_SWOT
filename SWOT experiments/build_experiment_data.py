@@ -124,15 +124,12 @@ def normalize_and_tensorize(train_df, val_df, test_df, split_config, time_znorma
     }
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Build split, normalized DRF tensor files from a data config")
-    parser.add_argument("--config", type=str, required=True, help="Path to a data config YAML file")
-    parser.add_argument("--plot", action="store_true", help="Save a tracks/density overview PNG alongside the tensor files on Drive")
-    args = parser.parse_args()
-
-    with open(args.config) as f:
-        config = yaml.safe_load(f)
-
+def build_experiment_data(config, plot=False):
+    """Fetches/splits/tensorizes one dataset from an already-loaded config
+    dict. Pulled out of main() so build_sliding_window_data.py can call this
+    same core pipeline in a loop (one call per generated per-day config)
+    without duplicating it -- both scripts run in the same (fetch) venv, so
+    a direct function call is enough, no subprocess/CLI boundary needed."""
     time_znormalised = config.get("time_znormalised", True)
 
     print(f"Fetching/loading data for '{config['name']}' ({config['start_date']} to {config['end_date']})...")
@@ -146,12 +143,15 @@ def main():
     # (results/exp1/, results/exp3/, experiment_5.py's results/<config>/,
     # etc.) instead of a flat pile of double-underscore-named files.
     # store_tensors() doesn't create missing parent directories itself, so
-    # this has to happen before calling it.
+    # this has to happen before calling it. config["name"] may itself
+    # contain "/" (e.g. a sliding-window day's "july25_2daywindow/
+    # 2025-07-01") -- pathlib's "/" join splits on that transparently, so
+    # this nests exactly as deep as the name implies with no special-casing.
     drive_base, _ = get_drive_base_path()
     experiment_dir = drive_base / "pytorch tensors" / config["name"]
     experiment_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.plot:
+    if plot:
         ds = combine_for_drf(data_dict, "xarray")
         display_1D_tracks(ds, config["name"], save_path=experiment_dir / "tracks_overview.png")
 
@@ -178,6 +178,18 @@ def main():
 
         tensors = normalize_and_tensorize(train_df, val_df, test_df, split_config, time_znormalised=time_znormalised)
         store_tensors(tensors, f"{config['name']}/{split_name}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Build split, normalized DRF tensor files from a data config")
+    parser.add_argument("--config", type=str, required=True, help="Path to a data config YAML file")
+    parser.add_argument("--plot", action="store_true", help="Save a tracks/density overview PNG alongside the tensor files on Drive")
+    args = parser.parse_args()
+
+    with open(args.config) as f:
+        config = yaml.safe_load(f)
+
+    build_experiment_data(config, plot=args.plot)
 
 
 if __name__ == "__main__":

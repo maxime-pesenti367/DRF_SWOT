@@ -798,11 +798,16 @@ if __name__ == "__main__":
             f"val_rmse winner: round {val_rmse_winner_idx}"
         )
 
-    # --- Output paths, auto-derived from the config filename ---
-    # Never hand-typed in the config itself — removes the copy-paste-bug
+    # --- Output paths, auto-derived from the config filename by default ---
+    # Never hand-typed for a normal config — removes the copy-paste-bug
     # class already hit twice with exp3/exp4's configs (missing
-    # plot_mean_filename, mistyped tensor path).
-    results_dir = SCRIPT_DIR / "results" / config_path.stem
+    # plot_mean_filename, mistyped tensor path). A config may instead set
+    # results_name to override this -- used by run_sliding_window.py's
+    # generated per-day configs, whose own filename stem alone (just a
+    # date, e.g. "2025-07-01") can't express which sliding-window model it
+    # belongs to and would otherwise collide with any other sliding-window
+    # model covering the same date. Absent, behaviour is unchanged.
+    results_dir = SCRIPT_DIR / "results" / config.get("results_name", config_path.stem)
     results_dir.mkdir(parents=True, exist_ok=True)
 
     model_config = dict(
