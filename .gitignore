@@ -7,6 +7,12 @@ SWOT experiments/gdrive_data
 SWOT experiments/data
 SWOT experiments/results
 
+# Sliding-window per-day configs -- fully reproducible from their master
+# config alone (configs/data_sliding_window/*.yaml, configs/exp_sliding_window/*.yaml),
+# so regenerated on demand rather than tracked
+SWOT experiments/configs/data_sliding_window/generated
+SWOT experiments/configs/exp_sliding_window/generated
+
 .vscode/
 venv/
 **/*.egg-info/
