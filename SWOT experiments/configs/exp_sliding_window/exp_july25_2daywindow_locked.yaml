@@ -22,14 +22,14 @@ model:
     nu: 1.5
 
 bayesian_optimization:
-  n_iterations: 10
-  initial_samples: 15
+  n_iterations: 0
+  initial_samples: 1
   bounds:
-    - [1e-5, 0.1]  # spatial_lengthscale
-    - [1e-5, 10]   # temporal_lengthscale
-    - [1e-5, 1]    # amplitude
-    - [1, 10]      # lengthscale2 LOWER BOUND ADJUSTED TO 1
-    - [1e-5, 1]    # amplitude2
+    - [0.01, 0.01]  # spatial_lengthscale
+    - [5, 5]   # temporal_lengthscale
+    - [0.6, 0.6]    # amplitude
+    - [5, 5]      # lengthscale2 LOWER BOUND ADJUSTED TO 1
+    - [0.6, 0.6]    # amplitude2
 
 uq_method:
   type: 'deep_ensemble'
