@@ -35,6 +35,7 @@ from DRF.utils import compute_rmse, compute_nlpd, compute_crps
 from drive_paths import get_drive_base_path
 from model_io import save_checkpoint
 from plot_search_history import plot_search_progress, plot_training_curve
+from replot_grid import build_grid_inputs
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -440,30 +441,43 @@ def _retrain_and_save_candidate(
     # model traveling out). Spatial inputs are raw radians here (never
     # z-scored), so no normalization needs to be applied/reversed for the
     # grid coordinates.
-    grid_lons_deg = torch.linspace(-180, 180, _NUM_LONGS)
-    grid_lats_deg = torch.linspace(-90, 90, _NUM_LATS)
-    grid_lon_grid, grid_lat_grid = torch.meshgrid(grid_lons_deg, grid_lats_deg, indexing="ij")
-    grid_spatial_X = torch.stack(
-        [torch.deg2rad(grid_lon_grid.reshape(-1)), torch.deg2rad(grid_lat_grid.reshape(-1))],
-        dim=1,
-    )
-    # Default grid-snapshot timestamp: the train split's own mean timestamp.
-    # When the data was z-scored (temporal_znormalised True -- see
-    # normalization_stats), 0.0 IS that mean, so zeros works directly. When
-    # time_znormalised was False at build_experiment_data.py time,
-    # temporal_X is raw days-since-2000 (not z-scored), so 0.0 would mean
-    # the year 2000 instead -- the actual stored mean has to be fed in.
-    # Deliberately not shown in the colorbar label below -- see
-    # replot_grid.py's --date option for predicting (and labeling) an exact,
-    # deliberately-chosen timestamp instead.
-    if normalization_stats.get("temporal_znormalised", True):
-        grid_temporal_X = torch.zeros(grid_spatial_X.shape[0], 1)
-    else:
-        grid_temporal_X = torch.full(
-            (grid_spatial_X.shape[0], 1),
+    # grid_snapshot_date (set by run_sliding_window.py's generated per-day
+    # configs, absent from every other config) requests the grid at an
+    # exact, explicit calendar date -- the day a sliding-window model's
+    # training window is centered on -- via the same build_grid_inputs()
+    # replot_grid.py's --date option already uses, rather than this run's
+    # implicit training-mean default. Absent, behaviour is unchanged: the
+    # train split's own mean timestamp (0.0 when z-scored -- that IS the
+    # mean then; normalization_stats["temporal_mean"] itself, in raw
+    # days-since-2000, when time_znormalised was False at
+    # build_experiment_data.py time). Deliberately not shown in the
+    # colorbar label below either way -- see replot_grid.py's --date option
+    # for predicting (and labeling) an exact, deliberately-chosen timestamp
+    # instead.
+    grid_snapshot_date = config.get("grid_snapshot_date")
+    if grid_snapshot_date is not None:
+        grid_spatial_X, grid_temporal_X = build_grid_inputs(
+            grid_snapshot_date,
             normalization_stats["temporal_mean"].item(),
-            dtype=torch.float32,
+            normalization_stats["temporal_std"].item(),
+            normalization_stats.get("temporal_znormalised", True),
         )
+    else:
+        grid_lons_deg = torch.linspace(-180, 180, _NUM_LONGS)
+        grid_lats_deg = torch.linspace(-90, 90, _NUM_LATS)
+        grid_lon_grid, grid_lat_grid = torch.meshgrid(grid_lons_deg, grid_lats_deg, indexing="ij")
+        grid_spatial_X = torch.stack(
+            [torch.deg2rad(grid_lon_grid.reshape(-1)), torch.deg2rad(grid_lat_grid.reshape(-1))],
+            dim=1,
+        )
+        if normalization_stats.get("temporal_znormalised", True):
+            grid_temporal_X = torch.zeros(grid_spatial_X.shape[0], 1)
+        else:
+            grid_temporal_X = torch.full(
+                (grid_spatial_X.shape[0], 1),
+                normalization_stats["temporal_mean"].item(),
+                dtype=torch.float32,
+            )
 
     if mp.get_start_method(allow_none=True) != "spawn":
         mp.set_start_method("spawn", force=True)
@@ -562,6 +576,17 @@ def _retrain_and_save_candidate(
         grid_var_pred.T.numpy(), cmap="viridis", vmin=0, vmax=0.2,
         colorbar_label="DRF Variance", save_path=candidate_dir / "final_variance.png",
     )
+    # Raw arrays behind the two PNGs above -- previously computed, plotted,
+    # and thrown away (final_predictions.pt/final_variance.pt are the TEST
+    # SET's predictions, not this grid). Saved unconditionally (not just for
+    # a sliding-window run's grid_snapshot_date) so build_validation_data.py
+    # can read a fixed-window run's default grid directly too, without
+    # reloading its checkpoints to redo this exact forward pass. No date in
+    # the filename -- for a sliding-window day this candidate_dir already
+    # lives inside that day's own folder, and a fixed-window run only ever
+    # has this one default grid here regardless.
+    torch.save(grid_mean_pred, candidate_dir / "final_mean_grid.pt")
+    torch.save(grid_var_pred, candidate_dir / "final_variance_grid.pt")
 
     plot_training_curve(candidate_dir)
 

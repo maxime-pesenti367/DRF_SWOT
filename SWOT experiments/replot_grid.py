@@ -271,10 +271,27 @@ if __name__ == "__main__":
             "NOT touch/regenerate the existing final_mean.png/"
             "final_variance.png (those stay as experiment_5.py originally "
             "produced them). A date far outside the model's training range "
-            "is extrapolation."
+            "is extrapolation. Mutually exclusive with --start-date/--end-date."
         ),
     )
+    parser.add_argument(
+        "--start-date", type=str, default=None,
+        help="Predict one grid per day from this date through --end-date (inclusive), e.g. '2025-07-01'.",
+    )
+    parser.add_argument(
+        "--end-date", type=str, default=None,
+        help="End of the --start-date range (inclusive).",
+    )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="With --start-date/--end-date, rebuild every day even if already saved (default: skip days already saved).",
+    )
     args = parser.parse_args()
+
+    if args.date is not None and (args.start_date is not None or args.end_date is not None):
+        parser.error("--date is mutually exclusive with --start-date/--end-date")
+    if bool(args.start_date) != bool(args.end_date):
+        parser.error("--start-date and --end-date must be given together")
 
     results_dir = Path(args.results_dir)
     if not results_dir.is_absolute():
@@ -285,7 +302,45 @@ if __name__ == "__main__":
         results_dir / "checkpoints", device
     )
 
-    if args.date is None:
+    if args.start_date is not None:
+        # One grid per day over a range -- e.g. so a fixed-window run can be
+        # evaluated against a whole validation period without retraining.
+        # Loads the ensemble once (already done above), then loops days,
+        # saving both the raw array (.pt, for build_validation_data.py to
+        # read directly -- no re-inference needed there) and the picture
+        # (.png) per day into results_dir/grids/, skipping a day already
+        # saved unless --force (same resumability as everything else in
+        # this pipeline).
+        grids_dir = results_dir / "grids"
+        grids_dir.mkdir(parents=True, exist_ok=True)
+        target_dates = [d.strftime("%Y-%m-%d") for d in pd.date_range(args.start_date, args.end_date, freq="1D")]
+        print(f"Building {len(target_dates)} whole-globe grid snapshot(s) from {args.start_date} to {args.end_date}...")
+
+        for i, date_str in enumerate(target_dates, 1):
+            mean_pt_path = grids_dir / f"{date_str}_mean.pt"
+            var_pt_path = grids_dir / f"{date_str}_variance.pt"
+            if not args.force and mean_pt_path.exists() and var_pt_path.exists():
+                print(f"[{i}/{len(target_dates)}] {date_str}: already saved, skipping.")
+                continue
+
+            print(f"[{i}/{len(target_dates)}] {date_str}: predicting grid...")
+            grid_spatial_X, grid_temporal_X = build_grid_inputs(date_str, temporal_mean, temporal_std, temporal_znormalised)
+            grid_mean, grid_var = predict_grid(final_models, device, grid_spatial_X, grid_temporal_X)
+
+            torch.save(grid_mean, mean_pt_path)
+            torch.save(grid_var, var_pt_path)
+            _save_global_grid_plot(
+                grid_mean.T.numpy(), cmap="coolwarm", vmin=-0.25, vmax=0.25,
+                colorbar_label=f"DRF Predicted SLA (m) -- {date_str}", save_path=grids_dir / f"{date_str}_mean.png",
+                mask_land=args.mask_land,
+            )
+            _save_global_grid_plot(
+                grid_var.T.numpy(), cmap="viridis", vmin=0, vmax=0.2,
+                colorbar_label=f"DRF Variance -- {date_str}", save_path=grids_dir / f"{date_str}_variance.png",
+                mask_land=args.mask_land,
+            )
+        print(f"Done. Grids saved in {grids_dir}")
+    elif args.date is None:
         print("Building global grid for whole-globe snapshot...")
         grid_lons_deg = torch.linspace(-180, 180, _NUM_LONGS)
         grid_lats_deg = torch.linspace(-90, 90, _NUM_LATS)

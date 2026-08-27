@@ -70,6 +70,13 @@ def build_day_config(master_config, master_stem, data_name, split_name, date_str
     day_config = {key: copy.deepcopy(master_config[key]) for key in CLONED_KEYS if key in master_config}
     day_config["results_name"] = f"{master_stem}/{date_str}"
     day_config["data"] = {"experiment_name": f"{data_name}/{date_str}", "split_name": split_name}
+    # Tells experiment_5.py to predict this day's whole-globe grid snapshot
+    # at exactly this day's center date, instead of its default (the
+    # training window's own mean timestamp, which for a 2-day-centered
+    # window is usually *close* to but not guaranteed exactly equal to the
+    # center day, since real satellite passes aren't perfectly symmetric
+    # within the window).
+    day_config["grid_snapshot_date"] = date_str
     return day_config
 
 
