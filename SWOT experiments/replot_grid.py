@@ -110,14 +110,35 @@ def to_float(x):
     return x.item() if torch.is_tensor(x) else x
 
 
-def _predict_and_save_grid(final_models, grid_spatial_X, grid_temporal_X, device, date_label, mean_path, variance_path, mask_land):
-    """Forward-passes final_models over the given grid and saves the mean/
-    variance snapshots. date_label is the exact string to show in the
-    colorbar -- None keeps the label ambiguous (matches experiment_5.py's
-    own final_mean.png/final_variance.png, which likewise never claims a
-    specific timestamp, only "the training set's mean", to avoid the two
-    ever silently disagreeing); a real string (from --date) states plainly
-    which timestamp this particular snapshot was predicted at."""
+def build_grid_inputs(date, temporal_mean, temporal_std, temporal_znormalised):
+    """Returns (grid_spatial_X, grid_temporal_X) for a dense whole-globe
+    grid at the given date -- the same construction the --date CLI branch
+    below uses, factored out so other scripts (e.g. an evaluation pipeline
+    comparing DRF against SWOT/DUACS at specific dates) can request a grid
+    at an arbitrary date without duplicating the temporal-normalization
+    logic. date may be a string or pd.Timestamp."""
+    grid_lons_deg = torch.linspace(-180, 180, _NUM_LONGS)
+    grid_lats_deg = torch.linspace(-90, 90, _NUM_LATS)
+    grid_lon_grid, grid_lat_grid = torch.meshgrid(grid_lons_deg, grid_lats_deg, indexing="ij")
+    grid_spatial_X = torch.stack(
+        [torch.deg2rad(grid_lon_grid.reshape(-1)), torch.deg2rad(grid_lat_grid.reshape(-1))], dim=1,
+    )
+    target_timestamp = pd.Timestamp(date)
+    if temporal_znormalised:
+        target_raw_seconds = target_timestamp.timestamp()
+        target_normalized = (target_raw_seconds - temporal_mean) / (temporal_std + 1e-8)
+    else:
+        target_normalized = (target_timestamp - TEMPORAL_REFERENCE_EPOCH) / pd.Timedelta(days=1)
+    grid_temporal_X = torch.full((grid_spatial_X.shape[0], 1), target_normalized, dtype=torch.float32)
+    return grid_spatial_X, grid_temporal_X
+
+
+def predict_grid(models, device, grid_spatial_X, grid_temporal_X):
+    """Forward-passes an ensemble over a grid, returning (mean, var) each
+    reshaped to (_NUM_LONGS, _NUM_LATS) -- the actual (2880, 1440) values,
+    not yet plotted/saved. Pulled out of _predict_and_save_grid so a caller
+    that just wants the array (e.g. to diff against DUACS, or to sample at
+    SWOT points) doesn't need to go through plotting/saving at all."""
     grid_loader = DataLoader(
         TensorDataset(grid_spatial_X, grid_temporal_X),
         batch_size=_GRID_BATCH_SIZE,
@@ -125,7 +146,7 @@ def _predict_and_save_grid(final_models, grid_spatial_X, grid_temporal_X, device
     )
     with torch.no_grad():
         grid_per_model_preds_list = []
-        for model in final_models:
+        for model in models:
             batch_preds = []
             for batch_spatial, batch_temporal in grid_loader:
                 batch_preds.append(
@@ -136,6 +157,18 @@ def _predict_and_save_grid(final_models, grid_spatial_X, grid_temporal_X, device
 
     grid_mean_pred = grid_per_model_preds.mean(dim=0).squeeze().reshape(_NUM_LONGS, _NUM_LATS)
     grid_var_pred = grid_per_model_preds.var(dim=0).squeeze().reshape(_NUM_LONGS, _NUM_LATS)
+    return grid_mean_pred, grid_var_pred
+
+
+def _predict_and_save_grid(final_models, grid_spatial_X, grid_temporal_X, device, date_label, mean_path, variance_path, mask_land):
+    """Predicts final_models over the given grid and saves the mean/
+    variance snapshots. date_label is the exact string to show in the
+    colorbar -- None keeps the label ambiguous (matches experiment_5.py's
+    own final_mean.png/final_variance.png, which likewise never claims a
+    specific timestamp, only "the training set's mean", to avoid the two
+    ever silently disagreeing); a real string (from --date) states plainly
+    which timestamp this particular snapshot was predicted at."""
+    grid_mean_pred, grid_var_pred = predict_grid(final_models, device, grid_spatial_X, grid_temporal_X)
 
     label_suffix = f" -- {date_label}" if date_label else ""
     _save_global_grid_plot(
@@ -286,14 +319,6 @@ if __name__ == "__main__":
                 f"Could not parse --date '{args.date}' -- expected a format "
                 f"like '2025-06-01 00:00'"
             ) from e
-        if temporal_znormalised:
-            target_raw_seconds = target_timestamp.timestamp()
-            target_normalized = (target_raw_seconds - temporal_mean) / (temporal_std + 1e-8)
-        else:
-            # No saved parameters needed here at all -- TEMPORAL_REFERENCE_EPOCH
-            # is a fixed constant, not derived from this (or any) dataset, so
-            # this conversion is the same regardless of which model trained it.
-            target_normalized = (target_timestamp - TEMPORAL_REFERENCE_EPOCH) / pd.Timedelta(days=1)
         # Slash date / colon time, matching build_l4_data.py's L4 overview
         # plot labels (e.g. "DUACS SLA (m) -- 2025/06/01 00:00") -- derived
         # from the parsed timestamp (not a raw string replace on args.date)
@@ -301,14 +326,9 @@ if __name__ == "__main__":
         date_label = target_timestamp.strftime("%Y/%m/%d %H:%M")
 
         print(f"Building global grid for whole-globe snapshot at {args.date}...")
-        grid_lons_deg = torch.linspace(-180, 180, _NUM_LONGS)
-        grid_lats_deg = torch.linspace(-90, 90, _NUM_LATS)
-        grid_lon_grid, grid_lat_grid = torch.meshgrid(grid_lons_deg, grid_lats_deg, indexing="ij")
-        grid_spatial_X = torch.stack(
-            [torch.deg2rad(grid_lon_grid.reshape(-1)), torch.deg2rad(grid_lat_grid.reshape(-1))],
-            dim=1,
+        grid_spatial_X, grid_temporal_X = build_grid_inputs(
+            target_timestamp, temporal_mean, temporal_std, temporal_znormalised
         )
-        grid_temporal_X = torch.full((grid_spatial_X.shape[0], 1), target_normalized, dtype=torch.float32)
 
         # Filesystem-safe (Windows disallows ":") while keeping the date
         # readable, e.g. "2025-06-01 00:00" -> "2025-06-01_00-00". Derived
