@@ -44,6 +44,28 @@ TEMPORAL_REFERENCE_EPOCH = pd.Timestamp("2000-01-01")
 # _NUM_LONGS/_NUM_LATS, unless the map gets its own explicitly-sized axes).
 _NUM_LONGS = 2880  # 0.125 deg/pixel: 360 / 0.125
 _NUM_LATS = 1440   # 0.125 deg/pixel: 180 / 0.125
+
+# Cell-CENTER coordinates of the first/last pixel, e.g. -179.9375/179.9375
+# for _NUM_LONGS=2880 -- NOT -180/180. torch.linspace(-180, 180, _NUM_LONGS)
+# (this file's/experiment_5.py's original construction) places a point
+# exactly ON each edge instead, which for _NUM_LONGS points spread over 360
+# degrees inclusive of both endpoints gives spacing 360/(_NUM_LONGS-1) --
+# subtly wider than the true 360/_NUM_LONGS pixel width, and phase-shifted
+# by about half a pixel from DUACS's own real grid (verified directly
+# against its zarr coordinates: exactly 0.125 deg spacing, first point
+# -179.9375, i.e. cell-centered). That mismatch meant a DRF "nearest pixel"
+# lookup and a DUACS "nearest pixel" lookup could disagree about which grid
+# cell a given point belongs to -- caught via two SWOT points close enough
+# to share one DUACS pixel but split across two different DRF ones.
+# Building the grid as pixel CENTERS (this formula) instead of edge-to-edge
+# makes DRF's grid exactly match DUACS's.
+_LON_PIXEL_WIDTH = 360 / _NUM_LONGS
+_LAT_PIXEL_WIDTH = 180 / _NUM_LATS
+_GRID_LON_MIN = -180 + _LON_PIXEL_WIDTH / 2
+_GRID_LON_MAX = 180 - _LON_PIXEL_WIDTH / 2
+_GRID_LAT_MIN = -90 + _LAT_PIXEL_WIDTH / 2
+_GRID_LAT_MAX = 90 - _LAT_PIXEL_WIDTH / 2
+
 _GRID_DPI = 256
 _COLORBAR_HEIGHT_PX = 256  # legend space only, not pixel-critical
 _BORDER_PX = 32  # small uniform white margin around the whole saved image
@@ -117,8 +139,8 @@ def build_grid_inputs(date, temporal_mean, temporal_std, temporal_znormalised):
     comparing DRF against SWOT/DUACS at specific dates) can request a grid
     at an arbitrary date without duplicating the temporal-normalization
     logic. date may be a string or pd.Timestamp."""
-    grid_lons_deg = torch.linspace(-180, 180, _NUM_LONGS)
-    grid_lats_deg = torch.linspace(-90, 90, _NUM_LATS)
+    grid_lons_deg = torch.linspace(_GRID_LON_MIN, _GRID_LON_MAX, _NUM_LONGS)
+    grid_lats_deg = torch.linspace(_GRID_LAT_MIN, _GRID_LAT_MAX, _NUM_LATS)
     grid_lon_grid, grid_lat_grid = torch.meshgrid(grid_lons_deg, grid_lats_deg, indexing="ij")
     grid_spatial_X = torch.stack(
         [torch.deg2rad(grid_lon_grid.reshape(-1)), torch.deg2rad(grid_lat_grid.reshape(-1))], dim=1,
@@ -342,8 +364,8 @@ if __name__ == "__main__":
         print(f"Done. Grids saved in {grids_dir}")
     elif args.date is None:
         print("Building global grid for whole-globe snapshot...")
-        grid_lons_deg = torch.linspace(-180, 180, _NUM_LONGS)
-        grid_lats_deg = torch.linspace(-90, 90, _NUM_LATS)
+        grid_lons_deg = torch.linspace(_GRID_LON_MIN, _GRID_LON_MAX, _NUM_LONGS)
+        grid_lats_deg = torch.linspace(_GRID_LAT_MIN, _GRID_LAT_MAX, _NUM_LATS)
         grid_lon_grid, grid_lat_grid = torch.meshgrid(grid_lons_deg, grid_lats_deg, indexing="ij")
         grid_spatial_X = torch.stack(
             [torch.deg2rad(grid_lon_grid.reshape(-1)), torch.deg2rad(grid_lat_grid.reshape(-1))],

@@ -35,7 +35,7 @@ from DRF.utils import compute_rmse, compute_nlpd, compute_crps
 from drive_paths import get_drive_base_path
 from model_io import save_checkpoint
 from plot_search_history import plot_search_progress, plot_training_curve
-from replot_grid import build_grid_inputs
+from replot_grid import _GRID_LAT_MAX, _GRID_LAT_MIN, _GRID_LON_MAX, _GRID_LON_MIN, build_grid_inputs
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -463,8 +463,18 @@ def _retrain_and_save_candidate(
             normalization_stats.get("temporal_znormalised", True),
         )
     else:
-        grid_lons_deg = torch.linspace(-180, 180, _NUM_LONGS)
-        grid_lats_deg = torch.linspace(-90, 90, _NUM_LATS)
+        # _GRID_LON_MIN/MAX etc. (imported from replot_grid.py, not
+        # redefined here) are pixel-CENTER bounds, not -180/180 -- see
+        # replot_grid.py's own comment on these constants for why: a
+        # DRF grid built edge-to-edge instead of cell-centered doesn't
+        # actually line up with DUACS's real grid, which broke nearest-
+        # pixel comparisons in build_validation_data.py. Imported (not
+        # independently duplicated, unlike most grid constants in this
+        # file) specifically so this branch and the grid_snapshot_date
+        # branch above can never silently drift into producing two
+        # different grids for what's supposed to be the same layout.
+        grid_lons_deg = torch.linspace(_GRID_LON_MIN, _GRID_LON_MAX, _NUM_LONGS)
+        grid_lats_deg = torch.linspace(_GRID_LAT_MIN, _GRID_LAT_MAX, _NUM_LATS)
         grid_lon_grid, grid_lat_grid = torch.meshgrid(grid_lons_deg, grid_lats_deg, indexing="ij")
         grid_spatial_X = torch.stack(
             [torch.deg2rad(grid_lon_grid.reshape(-1)), torch.deg2rad(grid_lat_grid.reshape(-1))],
