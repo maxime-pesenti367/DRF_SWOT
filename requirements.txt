@@ -13,3 +13,5 @@ numpy==1.26.4
 PyYAML
 xarray
 copernicusmarine
+podaac-data-subscriber
+pyarrow
