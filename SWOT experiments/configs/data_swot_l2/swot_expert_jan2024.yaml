@@ -1,0 +1,21 @@
+name: swot_expert_jan2024
+
+product: Expert   # only Expert is supported -- see build_swot_l2_data.py's module docstring
+
+start_date: "2024-01-01"
+end_date: "2024-01-02"
+
+# Optional -- restrict the download to a lon/lat box. Omit for global.
+# bbox:
+#   lon_min: -180
+#   lon_max: 180
+#   lat_min: -90
+#   lat_max: 90
+
+# Optional -- safety cap on how many granules a careless date range/bbox
+# can pull down in one run. Omit for unlimited.
+# max_granules: 50
+
+max_qual_flag: 0   # keep only points where ssha_karin_2_qual == 0 (no issues flagged)
+open_ocean_flag_value: 0   # keep only ancillary_surface_classification_flag == 0 (open_ocean) --
+                            # NOT redundant with max_qual_flag, see build_swot_l2_data.py's docstring
