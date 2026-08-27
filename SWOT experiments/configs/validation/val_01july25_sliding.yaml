@@ -1,0 +1,13 @@
+name: val_01july25_sliding
+
+start_date: "2025-07-01"
+end_date: "2025-07-01"
+
+duacs_config: l4_DUACS_my_1July2025
+swot_config: swot_01july25
+
+drf_runs:
+  - label: sliding_2day
+    kind: sliding_window
+    results_dir_pattern: "exp_july25_2daywindow/{date}"
+    candidate: val_rmse_winner

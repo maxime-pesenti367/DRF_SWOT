@@ -1,0 +1,18 @@
+# NOTE: this specific combination is a WIRING TEST, not a scientifically
+# valid comparison. exp_my_all_sats_2_days_adaptive was trained on
+# 2025-05-31..2025-06-02 data, not January 2024 -- so its drf_pred values
+# here are pure extrapolation, numerically meaningless, and expected to
+# score badly. It's wired up this way because no existing DRF checkpoint
+# covers the same period as the only SWOT L2 granule currently downloaded
+# (2024-01-01). A real comparison needs a drf_run trained on data covering
+# the same dates as swot_config.
+name: val_jan2024_wiring_test
+
+duacs_config: l4_DUACS_my_1Jan2024
+swot_config: swot_expert_jan2024
+
+drf_runs:
+  - label: fixed_2day_wiring_test
+    kind: fixed
+    results_dir: exp_my_all_sats_2_days_adaptive
+    candidate: val_rmse_winner
