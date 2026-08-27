@@ -1,0 +1,16 @@
+name: l4_DUACS_my_2025
+
+l4_product: DUACS   # which L4 product family -- only "DUACS" (CMEMS) is implemented so far; NASA "MEASURES" etc. planned later
+product_type: my    # "my" -> SEALEVEL_GLO_PHY_L4_MY_008_047, "nrt" -> SEALEVEL_GLO_PHY_L4_NRT_008_046
+
+start_date: "2025-01-01"
+end_date: "2026-01-01"
+variables: ["sla"]
+
+# Optional -- restrict the fetch to a lon/lat box instead of the full globe.
+# Omit this whole block for a global grid.
+# bbox:
+#   lon_min: -180
+#   lon_max: 180
+#   lat_min: -90
+#   lat_max: 90
