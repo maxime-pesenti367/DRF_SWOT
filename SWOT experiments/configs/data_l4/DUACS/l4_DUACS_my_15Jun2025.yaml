@@ -1,4 +1,4 @@
-name: l4_DUACS_my_4_weeks
+name: l4_DUACS_my_15Jun2025
 
 l4_product: DUACS   # which L4 product family -- only "DUACS" (CMEMS) is implemented so far; NASA "MEASURES" etc. planned later
 product_type: my    # "my" -> SEALEVEL_GLO_PHY_L4_MY_008_047, "nrt" -> SEALEVEL_GLO_PHY_L4_NRT_008_046
