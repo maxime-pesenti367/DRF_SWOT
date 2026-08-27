@@ -9,5 +9,5 @@ swot_config: swot_01july25
 drf_runs:
   - label: sliding_2day
     kind: sliding_window
-    results_dir_pattern: "exp_july25_2daywindow/{date}"
+    results_dir_pattern: "exp_july25_2daywindow_locked/{date}"
     candidate: val_rmse_winner
