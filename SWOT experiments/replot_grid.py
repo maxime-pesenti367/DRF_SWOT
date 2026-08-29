@@ -288,7 +288,7 @@ def _save_mean_variance_plots(grid_mean_pred, grid_var_pred, date_label, mean_pa
         mask_land=mask_land,
     )
     _save_global_grid_plot(
-        grid_var_pred.T.numpy(), cmap="viridis", vmin=0, vmax=0.2,
+        grid_var_pred.T.numpy(), cmap="viridis", vmin=0, vmax=0.1,
         colorbar_label=f"DRF Variance{label_suffix}", save_path=variance_path,
         mask_land=mask_land,
     )
@@ -299,7 +299,7 @@ def _save_mean_variance_plots(grid_mean_pred, grid_var_pred, date_label, mean_pa
             save_path=mean_path.with_name(f"gulf_{mean_path.name}"), mask_land=mask_land,
         )
         _save_gulf_crop_plot(
-            grid_var_pred, cmap="viridis", vmin=0, vmax=0.2,
+            grid_var_pred, cmap="viridis", vmin=0, vmax=0.1,
             colorbar_label=f"DRF Variance{label_suffix} -- Gulf Stream",
             save_path=variance_path.with_name(f"gulf_{variance_path.name}"), mask_land=mask_land,
         )
