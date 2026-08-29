@@ -17,6 +17,11 @@ from pathlib import Path
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+import matplotlib
+matplotlib.use("Agg")  # must precede pyplot import -- see build_sliding_window_data.py's
+                        # identical fix for the tkinter/Tcl crash this avoids when many
+                        # figures get created+closed in a loop (--start-date/--end-date here,
+                        # or any caller like build_validation_data.py that saves many plots)
 import matplotlib.pyplot as plt
 import pandas as pd
 import torch
@@ -70,32 +75,75 @@ _GRID_DPI = 256
 _COLORBAR_HEIGHT_PX = 256  # legend space only, not pixel-critical
 _BORDER_PX = 32  # small uniform white margin around the whole saved image
 
-_TOTAL_WIDTH_PX = _NUM_LONGS + 2 * _BORDER_PX
-_TOTAL_HEIGHT_PX = _NUM_LATS + _COLORBAR_HEIGHT_PX + 2 * _BORDER_PX
-_FIG_WIDTH_IN = _TOTAL_WIDTH_PX / _GRID_DPI
-_FIG_HEIGHT_IN = _TOTAL_HEIGHT_PX / _GRID_DPI
+# Gulf Stream bounding box -- kept numerically identical to
+# build_gulf_stream_mask.py's GULF_STREAM_LON_MIN/MAX etc (not imported,
+# same sibling-script-duplication convention as _figure_dims/_panel_axes
+# elsewhere in this project). Both box edges are exact multiples of the
+# 0.125deg pixel width (82/0.125=656, 40/0.125=320, 25/0.125=200,
+# 45/0.125=360, all integers), i.e. the box already falls exactly on pixel
+# EDGES on this grid -- so a "pixels whose center lies inside the box"
+# crop reproduces the box's true edges exactly, with zero rounding drift.
+_GULF_LON_MIN = -82.0
+_GULF_LON_MAX = -40.0
+_GULF_LAT_MIN = 25.0
+_GULF_LAT_MAX = 45.0
 
 
-def _save_global_grid_plot(data_np, cmap, vmin, vmax, colorbar_label, save_path, mask_land=False):
-    """Saves a whole-globe grid snapshot with the map rendered at exactly
-    _NUM_LONGS x _NUM_LATS pixels -- no interpolation/resampling -- inset by
-    a uniform _BORDER_PX white margin on all four sides. See experiment_5.py's
-    copy of this function for the full rationale."""
-    fig = plt.figure(figsize=(_FIG_WIDTH_IN, _FIG_HEIGHT_IN), dpi=_GRID_DPI)
-    map_left = _BORDER_PX / _TOTAL_WIDTH_PX
-    map_width = _NUM_LONGS / _TOTAL_WIDTH_PX
-    map_bottom = (_BORDER_PX + _COLORBAR_HEIGHT_PX) / _TOTAL_HEIGHT_PX
-    map_height = _NUM_LATS / _TOTAL_HEIGHT_PX
+def _gulf_pixel_bounds():
+    """Pixel index bounds (as half-open ranges) of the Gulf Stream box on
+    the canonical _NUM_LONGS x _NUM_LATS grid, plus the crop's true outer
+    edges in degrees (derived from the included pixels' own index spacing,
+    not the raw box constants, avoiding any float drift -- same pattern as
+    plot_swot_track_overlays_v2.py's _load_grid16)."""
+    grid_lons_deg = torch.linspace(_GRID_LON_MIN, _GRID_LON_MAX, _NUM_LONGS)
+    grid_lats_deg = torch.linspace(_GRID_LAT_MIN, _GRID_LAT_MAX, _NUM_LATS)
+    lon_idx = torch.nonzero((grid_lons_deg >= _GULF_LON_MIN) & (grid_lons_deg <= _GULF_LON_MAX)).flatten()
+    lat_idx = torch.nonzero((grid_lats_deg >= _GULF_LAT_MIN) & (grid_lats_deg <= _GULF_LAT_MAX)).flatten()
+    lon_i0, lon_i1 = int(lon_idx[0]), int(lon_idx[-1]) + 1
+    lat_i0, lat_i1 = int(lat_idx[0]), int(lat_idx[-1]) + 1
+    edge_lon_min = _GRID_LON_MIN + lon_i0 * _LON_PIXEL_WIDTH - _LON_PIXEL_WIDTH / 2
+    edge_lon_max = _GRID_LON_MIN + (lon_i1 - 1) * _LON_PIXEL_WIDTH + _LON_PIXEL_WIDTH / 2
+    edge_lat_min = _GRID_LAT_MIN + lat_i0 * _LAT_PIXEL_WIDTH - _LAT_PIXEL_WIDTH / 2
+    edge_lat_max = _GRID_LAT_MIN + (lat_i1 - 1) * _LAT_PIXEL_WIDTH + _LAT_PIXEL_WIDTH / 2
+    return lon_i0, lon_i1, lat_i0, lat_i1, edge_lon_min, edge_lon_max, edge_lat_min, edge_lat_max
+
+
+(
+    _GULF_LON_I0, _GULF_LON_I1, _GULF_LAT_I0, _GULF_LAT_I1,
+    _GULF_EDGE_LON_MIN, _GULF_EDGE_LON_MAX, _GULF_EDGE_LAT_MIN, _GULF_EDGE_LAT_MAX,
+) = _gulf_pixel_bounds()
+
+
+def _save_global_grid_plot(
+    data_np, cmap, vmin, vmax, colorbar_label, save_path, mask_land=False,
+    num_lons=_NUM_LONGS, num_lats=_NUM_LATS,
+    lon_min=-180.0, lon_max=180.0, lat_min=-90.0, lat_max=90.0,
+):
+    """Saves a grid snapshot with the map rendered at exactly num_lons x
+    num_lats pixels -- no interpolation/resampling -- inset by a uniform
+    _BORDER_PX white margin on all four sides. Defaults cover the whole
+    globe (matching experiment_5.py's copy of this function, which has the
+    full rationale); passing a smaller num_lons/num_lats + a narrower
+    lon/lat range (e.g. _save_gulf_crop_plot below) renders a pixel-exact
+    zoomed crop instead, using the same fig.add_axes() pixel-fraction
+    technique so it never gets resampled either."""
+    total_width_px = num_lons + 2 * _BORDER_PX
+    total_height_px = num_lats + _COLORBAR_HEIGHT_PX + 2 * _BORDER_PX
+    fig = plt.figure(figsize=(total_width_px / _GRID_DPI, total_height_px / _GRID_DPI), dpi=_GRID_DPI)
+    map_left = _BORDER_PX / total_width_px
+    map_width = num_lons / total_width_px
+    map_bottom = (_BORDER_PX + _COLORBAR_HEIGHT_PX) / total_height_px
+    map_height = num_lats / total_height_px
     ax = fig.add_axes(
         [map_left, map_bottom, map_width, map_height],
         projection=ccrs.PlateCarree(central_longitude=0),
     )
-    ax.set_extent([-180, 180, -90, 90], crs=ccrs.PlateCarree())
+    ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=ccrs.PlateCarree())
     im = ax.imshow(
         data_np,
         origin="lower",
         cmap=cmap,
-        extent=[-180, 180, -90, 90],
+        extent=[lon_min, lon_max, lat_min, lat_max],
         transform=ccrs.PlateCarree(),
         vmin=vmin,
         vmax=vmax,
@@ -120,8 +168,8 @@ def _save_global_grid_plot(data_np, cmap, vmin, vmax, colorbar_label, save_path,
     ax.add_feature(cfeature.BORDERS, linestyle=":", linewidth=1.0, zorder=2)
     cax_left = map_left + 0.15 * map_width
     cax_width = 0.7 * map_width
-    cax_bottom = _BORDER_PX / _TOTAL_HEIGHT_PX + 0.35 * (_COLORBAR_HEIGHT_PX / _TOTAL_HEIGHT_PX)
-    cax_height = 0.3 * (_COLORBAR_HEIGHT_PX / _TOTAL_HEIGHT_PX)
+    cax_bottom = _BORDER_PX / total_height_px + 0.35 * (_COLORBAR_HEIGHT_PX / total_height_px)
+    cax_height = 0.3 * (_COLORBAR_HEIGHT_PX / total_height_px)
     cax = fig.add_axes([cax_left, cax_bottom, cax_width, cax_height])
     fig.colorbar(im, cax=cax, orientation="horizontal", label=colorbar_label)
     fig.savefig(save_path, dpi=_GRID_DPI)
@@ -182,16 +230,32 @@ def predict_grid(models, device, grid_spatial_X, grid_temporal_X):
     return grid_mean_pred, grid_var_pred
 
 
-def _predict_and_save_grid(final_models, grid_spatial_X, grid_temporal_X, device, date_label, mean_path, variance_path, mask_land):
-    """Predicts final_models over the given grid and saves the mean/
-    variance snapshots. date_label is the exact string to show in the
+def _save_gulf_crop_plot(grid_pred, cmap, vmin, vmax, colorbar_label, save_path, mask_land):
+    """Pixel-exact crop of the Gulf Stream bounding box
+    (_GULF_LON_I0:_GULF_LON_I1, _GULF_LAT_I0:_GULF_LAT_I1) out of a
+    full-globe grid_pred tensor shaped (_NUM_LONGS, _NUM_LATS) -- sliced by
+    index, same technique as plot_swot_track_overlays_v2.py's
+    _load_grid16, so this is a genuine zoom into the same underlying
+    pixels (just fewer of them), never a resampled reprojection."""
+    crop = grid_pred[_GULF_LON_I0:_GULF_LON_I1, _GULF_LAT_I0:_GULF_LAT_I1]
+    _save_global_grid_plot(
+        crop.T.numpy(), cmap=cmap, vmin=vmin, vmax=vmax, colorbar_label=colorbar_label, save_path=save_path,
+        mask_land=mask_land, num_lons=_GULF_LON_I1 - _GULF_LON_I0, num_lats=_GULF_LAT_I1 - _GULF_LAT_I0,
+        lon_min=_GULF_EDGE_LON_MIN, lon_max=_GULF_EDGE_LON_MAX, lat_min=_GULF_EDGE_LAT_MIN, lat_max=_GULF_EDGE_LAT_MAX,
+    )
+
+
+def _save_mean_variance_plots(grid_mean_pred, grid_var_pred, date_label, mean_path, variance_path, mask_land, gulf):
+    """Saves the full-globe mean/variance snapshots and, if gulf, a second
+    pixel-exact pair zoomed into the Gulf Stream box alongside them, named
+    gulf_<original file name> (e.g. gulf_final_mean.png) -- reused by every
+    --date/--start-date/default branch below so gulf support only needs
+    implementing once. date_label is the exact string to show in the
     colorbar -- None keeps the label ambiguous (matches experiment_5.py's
     own final_mean.png/final_variance.png, which likewise never claims a
     specific timestamp, only "the training set's mean", to avoid the two
-    ever silently disagreeing); a real string (from --date) states plainly
-    which timestamp this particular snapshot was predicted at."""
-    grid_mean_pred, grid_var_pred = predict_grid(final_models, device, grid_spatial_X, grid_temporal_X)
-
+    ever silently disagreeing); a real string (from --date/--start-date)
+    states plainly which timestamp this particular snapshot was predicted at."""
     label_suffix = f" -- {date_label}" if date_label else ""
     _save_global_grid_plot(
         grid_mean_pred.T.numpy(), cmap="coolwarm", vmin=-0.25, vmax=0.25,
@@ -203,6 +267,25 @@ def _predict_and_save_grid(final_models, grid_spatial_X, grid_temporal_X, device
         colorbar_label=f"DRF Variance{label_suffix}", save_path=variance_path,
         mask_land=mask_land,
     )
+    if gulf:
+        _save_gulf_crop_plot(
+            grid_mean_pred, cmap="coolwarm", vmin=-0.25, vmax=0.25,
+            colorbar_label=f"DRF Predicted SLA (m){label_suffix} -- Gulf Stream",
+            save_path=mean_path.with_name(f"gulf_{mean_path.name}"), mask_land=mask_land,
+        )
+        _save_gulf_crop_plot(
+            grid_var_pred, cmap="viridis", vmin=0, vmax=0.2,
+            colorbar_label=f"DRF Variance{label_suffix} -- Gulf Stream",
+            save_path=variance_path.with_name(f"gulf_{variance_path.name}"), mask_land=mask_land,
+        )
+
+
+def _predict_and_save_grid(final_models, grid_spatial_X, grid_temporal_X, device, date_label, mean_path, variance_path, mask_land, gulf=False):
+    """Predicts final_models over the given grid, then saves the mean/
+    variance snapshots (plus Gulf Stream crops if gulf) via
+    _save_mean_variance_plots."""
+    grid_mean_pred, grid_var_pred = predict_grid(final_models, device, grid_spatial_X, grid_temporal_X)
+    _save_mean_variance_plots(grid_mean_pred, grid_var_pred, date_label, mean_path, variance_path, mask_land, gulf)
 
 
 def load_ensemble(checkpoints_dir, device):
@@ -308,6 +391,17 @@ if __name__ == "__main__":
         "--force", action="store_true",
         help="With --start-date/--end-date, rebuild every day even if already saved (default: skip days already saved).",
     )
+    parser.add_argument(
+        "--gulf", action="store_true",
+        help=(
+            "Also save a pixel-exact crop zoomed into the Gulf Stream region "
+            "(same box as build_gulf_stream_mask.py) alongside every normal "
+            "mean/variance image, named gulf_<original file name> (e.g. "
+            "final_mean.png -> gulf_final_mean.png). No extra model inference -- "
+            "reuses the same predicted grid, just cropped and re-rendered. "
+            "Combines with --date/--start-date/--end-date/--mask-land."
+        ),
+    )
     args = parser.parse_args()
 
     if args.date is not None and (args.start_date is not None or args.end_date is not None):
@@ -351,15 +445,10 @@ if __name__ == "__main__":
 
             torch.save(grid_mean, mean_pt_path)
             torch.save(grid_var, var_pt_path)
-            _save_global_grid_plot(
-                grid_mean.T.numpy(), cmap="coolwarm", vmin=-0.25, vmax=0.25,
-                colorbar_label=f"DRF Predicted SLA (m) -- {date_str}", save_path=grids_dir / f"{date_str}_mean.png",
-                mask_land=args.mask_land,
-            )
-            _save_global_grid_plot(
-                grid_var.T.numpy(), cmap="viridis", vmin=0, vmax=0.2,
-                colorbar_label=f"DRF Variance -- {date_str}", save_path=grids_dir / f"{date_str}_variance.png",
-                mask_land=args.mask_land,
+            _save_mean_variance_plots(
+                grid_mean, grid_var, date_str,
+                grids_dir / f"{date_str}_mean.png", grids_dir / f"{date_str}_variance.png",
+                args.mask_land, args.gulf,
             )
         print(f"Done. Grids saved in {grids_dir}")
     elif args.date is None:
@@ -385,6 +474,7 @@ if __name__ == "__main__":
         _predict_and_save_grid(
             final_models, grid_spatial_X, grid_temporal_X, device, None,
             results_dir / "final_mean.png", results_dir / "final_variance.png", args.mask_land,
+            gulf=args.gulf,
         )
         print("Global grid predictions computed.")
         print(f"Regenerated final_mean.png and final_variance.png in {results_dir}")
@@ -418,6 +508,7 @@ if __name__ == "__main__":
         _predict_and_save_grid(
             final_models, grid_spatial_X, grid_temporal_X, device, date_label,
             mean_path, variance_path, args.mask_land,
+            gulf=args.gulf,
         )
         print("Global grid predictions computed.")
         print(f"Saved {mean_path.name} and {variance_path.name} in {results_dir}")
