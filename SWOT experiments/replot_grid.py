@@ -75,18 +75,20 @@ _GRID_DPI = 256
 _COLORBAR_HEIGHT_PX = 256  # legend space only, not pixel-critical
 _BORDER_PX = 32  # small uniform white margin around the whole saved image
 
-# Gulf Stream bounding box -- kept numerically identical to
-# build_gulf_stream_mask.py's GULF_STREAM_LON_MIN/MAX etc (not imported,
-# same sibling-script-duplication convention as _figure_dims/_panel_axes
-# elsewhere in this project). Both box edges are exact multiples of the
-# 0.125deg pixel width (82/0.125=656, 40/0.125=320, 25/0.125=200,
-# 45/0.125=360, all integers), i.e. the box already falls exactly on pixel
-# EDGES on this grid -- so a "pixels whose center lies inside the box"
-# crop reproduces the box's true edges exactly, with zero rounding drift.
+# Gulf Stream bounding box for the --gulf zoom crop below. Lon/lat MIN
+# match build_gulf_stream_mask.py's GULF_STREAM_LON_MIN/LAT_MIN exactly;
+# MAX is deliberately wider here (that mask's box is tuned tight around the
+# high-eddy-activity current itself, whereas this crop is a visualization
+# and benefits from showing more surrounding context). All four edges are
+# still exact multiples of the 0.125deg pixel width (82/0.125=656,
+# 20/0.125=160, 25/0.125=200, 50/0.125=400, all integers), i.e. the box
+# falls exactly on pixel EDGES on this grid -- so a "pixels whose center
+# lies inside the box" crop reproduces these edges exactly, zero rounding
+# drift.
 _GULF_LON_MIN = -82.0
-_GULF_LON_MAX = -40.0
+_GULF_LON_MAX = -20.0
 _GULF_LAT_MIN = 25.0
-_GULF_LAT_MAX = 45.0
+_GULF_LAT_MAX = 50.0
 
 
 def _gulf_pixel_bounds():
@@ -231,16 +233,24 @@ def predict_grid(models, device, grid_spatial_X, grid_temporal_X):
 
 
 def _save_gulf_crop_plot(grid_pred, cmap, vmin, vmax, colorbar_label, save_path, mask_land):
-    """Pixel-exact crop of the Gulf Stream bounding box
-    (_GULF_LON_I0:_GULF_LON_I1, _GULF_LAT_I0:_GULF_LAT_I1) out of a
-    full-globe grid_pred tensor shaped (_NUM_LONGS, _NUM_LATS) -- sliced by
-    index, same technique as plot_swot_track_overlays_v2.py's
-    _load_grid16, so this is a genuine zoom into the same underlying
-    pixels (just fewer of them), never a resampled reprojection."""
+    """Crop of the Gulf Stream bounding box (_GULF_LON_I0:_GULF_LON_I1,
+    _GULF_LAT_I0:_GULF_LAT_I1) out of a full-globe grid_pred tensor shaped
+    (_NUM_LONGS, _NUM_LATS) -- sliced by index (same technique as
+    plot_swot_track_overlays_v2.py's _load_grid16), so every rendered value
+    is a genuine, unaltered grid cell, never blended/resampled.
+
+    Deliberately does NOT pass num_lons/num_lats -- those default to the
+    full _NUM_LONGS/_NUM_LATS, so this renders at the exact same overall
+    canvas size (and therefore the exact same colorbar/border/font size) as
+    the whole-globe plots. Only the axes' extent narrows to the Gulf box,
+    so the small crop gets zoomed to fill that same large map area rather
+    than shrinking the whole figure down to a tiny canvas -- interpolation
+    stays "none", so each source cell still renders as one sharp block
+    (just a bigger one), not a smoothed reprojection."""
     crop = grid_pred[_GULF_LON_I0:_GULF_LON_I1, _GULF_LAT_I0:_GULF_LAT_I1]
     _save_global_grid_plot(
         crop.T.numpy(), cmap=cmap, vmin=vmin, vmax=vmax, colorbar_label=colorbar_label, save_path=save_path,
-        mask_land=mask_land, num_lons=_GULF_LON_I1 - _GULF_LON_I0, num_lats=_GULF_LAT_I1 - _GULF_LAT_I0,
+        mask_land=mask_land,
         lon_min=_GULF_EDGE_LON_MIN, lon_max=_GULF_EDGE_LON_MAX, lat_min=_GULF_EDGE_LAT_MIN, lat_max=_GULF_EDGE_LAT_MAX,
     )
 
