@@ -115,6 +115,20 @@ def _gulf_pixel_bounds():
     _GULF_EDGE_LON_MIN, _GULF_EDGE_LON_MAX, _GULF_EDGE_LAT_MIN, _GULF_EDGE_LAT_MAX,
 ) = _gulf_pixel_bounds()
 
+# Gulf crop map width is pinned to _NUM_LONGS (same as the whole-globe
+# plots, so gulf_*.png reads as "the same big picture, zoomed in"); map
+# HEIGHT is instead derived from the crop's own lon/lat aspect ratio at
+# that fixed width. Reusing _NUM_LATS (the whole globe's 180deg-tall
+# aspect) here would letterbox the much shorter Gulf box, leaving dead
+# white space above/below -- a PlateCarree GeoAxes preserves 1 degree lon
+# == 1 degree lat on screen regardless of the axes box's own pixel shape,
+# so the box's pixel aspect has to match the data's degree aspect for the
+# map to fill it exactly.
+_GULF_MAP_WIDTH_PX = _NUM_LONGS
+_GULF_MAP_HEIGHT_PX = (
+    _GULF_MAP_WIDTH_PX * (_GULF_EDGE_LAT_MAX - _GULF_EDGE_LAT_MIN) / (_GULF_EDGE_LON_MAX - _GULF_EDGE_LON_MIN)
+)
+
 
 def _save_global_grid_plot(
     data_np, cmap, vmin, vmax, colorbar_label, save_path, mask_land=False,
@@ -239,18 +253,19 @@ def _save_gulf_crop_plot(grid_pred, cmap, vmin, vmax, colorbar_label, save_path,
     plot_swot_track_overlays_v2.py's _load_grid16), so every rendered value
     is a genuine, unaltered grid cell, never blended/resampled.
 
-    Deliberately does NOT pass num_lons/num_lats -- those default to the
-    full _NUM_LONGS/_NUM_LATS, so this renders at the exact same overall
-    canvas size (and therefore the exact same colorbar/border/font size) as
-    the whole-globe plots. Only the axes' extent narrows to the Gulf box,
-    so the small crop gets zoomed to fill that same large map area rather
-    than shrinking the whole figure down to a tiny canvas -- interpolation
-    stays "none", so each source cell still renders as one sharp block
-    (just a bigger one), not a smoothed reprojection."""
+    Map width (_GULF_MAP_WIDTH_PX) matches the whole-globe plots exactly,
+    so gulf_*.png reads as "the same big picture, zoomed in", with the same
+    colorbar/border/font size. Map height (_GULF_MAP_HEIGHT_PX) is instead
+    sized to the crop's own lon/lat aspect ratio at that width -- reusing
+    the globe's height here would letterbox the much shorter Gulf box with
+    dead white space above/below, so the overall saved image ends up
+    shorter than the whole-globe one, not padded to match it.
+    interpolation stays "none", so each source cell still renders as one
+    sharp block (just a bigger one), not a smoothed reprojection."""
     crop = grid_pred[_GULF_LON_I0:_GULF_LON_I1, _GULF_LAT_I0:_GULF_LAT_I1]
     _save_global_grid_plot(
         crop.T.numpy(), cmap=cmap, vmin=vmin, vmax=vmax, colorbar_label=colorbar_label, save_path=save_path,
-        mask_land=mask_land,
+        mask_land=mask_land, num_lons=_GULF_MAP_WIDTH_PX, num_lats=_GULF_MAP_HEIGHT_PX,
         lon_min=_GULF_EDGE_LON_MIN, lon_max=_GULF_EDGE_LON_MAX, lat_min=_GULF_EDGE_LAT_MIN, lat_max=_GULF_EDGE_LAT_MAX,
     )
 
