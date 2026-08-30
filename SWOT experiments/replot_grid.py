@@ -21,6 +21,8 @@ only READS the Zarr store build_l4_data.py already cached on Drive -- it
 never fetches from Copernicus Marine itself.
 """
 
+VARIANCEVMAX=0.04
+
 import argparse
 from pathlib import Path
 
@@ -323,7 +325,7 @@ def _save_mean_variance_plots(grid_mean_pred, grid_var_pred, date_label, mean_pa
         mask_land=mask_land,
     )
     _save_global_grid_plot(
-        grid_var_pred.T.numpy(), cmap="viridis", vmin=0, vmax=0.1,
+        grid_var_pred.T.numpy(), cmap="viridis", vmin=0, vmax=VARIANCEVMAX,
         colorbar_label=f"DRF Variance{label_suffix}", save_path=variance_path,
         mask_land=mask_land,
     )
@@ -335,7 +337,7 @@ def _save_mean_variance_plots(grid_mean_pred, grid_var_pred, date_label, mean_pa
             save_path=mean_path.with_name(f"{region_name}_{mean_path.name}"), mask_land=mask_land,
         )
         _save_region_crop_plot(
-            region_name, grid_var_pred, cmap="viridis", vmin=0, vmax=0.1,
+            region_name, grid_var_pred, cmap="viridis", vmin=0, vmax=VARIANCEVMAX,
             colorbar_label=f"DRF Variance{label_suffix} -- {region_title}",
             save_path=variance_path.with_name(f"{region_name}_{variance_path.name}"), mask_land=mask_land,
         )
