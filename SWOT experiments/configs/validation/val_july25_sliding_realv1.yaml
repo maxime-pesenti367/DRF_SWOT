@@ -1,4 +1,4 @@
-name: val_july25_sliding
+name: val_july25_sliding_realv1
 
 start_date: "2025-07-01"
 end_date: "2025-07-31"
@@ -9,5 +9,5 @@ swot_config: swot_july25
 drf_runs:
   - label: sliding_2day
     kind: sliding_window
-    results_dir_pattern: "exp_july25_2daywindow_smoke/{date}"
+    results_dir_pattern: "exp_july25_2daywindow_realv1/{date}"
     candidate: val_rmse_winner

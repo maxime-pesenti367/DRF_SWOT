@@ -1,0 +1,8 @@
+name: l4_DUACS_my_July2025
+
+l4_product: DUACS
+product_type: my
+
+start_date: "2025-07-01"
+end_date: "2025-07-31"
+variables: ["sla"]
