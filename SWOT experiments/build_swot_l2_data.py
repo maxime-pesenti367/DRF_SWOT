@@ -66,8 +66,10 @@ cycle_number/pass_number come from each granule's own global attributes
 Raw granules land in data/karin/<name>/ -- auto-derived from the config's
 name, never hand-typed, avoiding the copy-paste-bug class this project has
 already hit twice elsewhere (see experiment_5.py's results_name comment).
-Skipped (not re-downloaded) if that directory already has matching
-granules, unless --force.
+podaac-data-downloader is invoked every run regardless of what's already
+there -- it checks each granule's existence/checksum itself and only
+(re-)fetches what's missing or doesn't match, --force overrides this to
+re-download everything.
 
 Usage:
     python build_swot_l2_data.py --config configs/data_swot_l2/swot_expert_jan2024.yaml
@@ -119,7 +121,14 @@ def _find_downloader_executable():
     )
 
 
-def _download_granules(config, raw_dir):
+def _download_granules(config, raw_dir, force=False):
+    """Always safe to call even when raw_dir already has granules --
+    podaac-data-downloader queries the full CMR granule list for this
+    date range/bbox itself and, by default (force=False), skips any file
+    that already exists locally with a matching checksum, only fetching
+    what's missing or doesn't match (e.g. a truncated prior download).
+    force=True passes -f through, which re-downloads everything
+    regardless of local state."""
     downloader = _find_downloader_executable()
     raw_dir.mkdir(parents=True, exist_ok=True)
 
@@ -136,6 +145,8 @@ def _download_granules(config, raw_dir):
     max_granules = config.get("max_granules")
     if max_granules:
         cmd += ["--limit", str(max_granules)]
+    if force:
+        cmd += ["-f"]
 
     print(f"Running: {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
@@ -148,6 +159,7 @@ def _granule_to_dataframe(path, max_qual_flag, open_ocean_flag_value):
     corr = ds["height_cor_xover"].values
     qual = ds["ssha_karin_2_qual"].values
     surface = ds["ancillary_surface_classification_flag"].values
+    cross_track_distance = ds["cross_track_distance"].values
     lat = ds["latitude"].values
     lon = ds["longitude"].values
     # time is 1D (num_lines,) -- broadcast to (num_lines, num_pixels) to
@@ -158,6 +170,27 @@ def _granule_to_dataframe(path, max_qual_flag, open_ocean_flag_value):
     pass_number = int(ds.attrs["pass_number"])
     ds.close()
 
+    # is_leftmost marks, per line (row of this 2D swath), the single pixel
+    # closest to the left edge of the left swath (most negative
+    # cross_track_distance -- see cross_track_distance's own comment attr:
+    # negative = left side of swath) among pixels that will actually
+    # survive the filtering below -- mirrors the dropna/quality_flag/
+    # surface_flag conditions applied to df further down exactly, so an
+    # is_leftmost=True point is always still present in the returned
+    # dataframe, never filtered out afterwards. A line with zero surviving
+    # pixels gets no is_leftmost point at all (nothing to flag). This lets
+    # a caller later re-trace the swath's left-edge line without needing
+    # the raw granule again.
+    survives_filter = (
+        ~np.isnan(ssha) & ~np.isnan(corr)
+        & (qual == max_qual_flag) & (surface == open_ocean_flag_value)
+    )
+    masked_cross_track = np.where(survives_filter, cross_track_distance, np.inf)
+    has_surviving_pixel = survives_filter.any(axis=1)
+    leftmost_pixel_idx = masked_cross_track.argmin(axis=1)
+    is_leftmost = np.zeros(ssha.shape, dtype=bool)
+    is_leftmost[has_surviving_pixel, leftmost_pixel_idx[has_surviving_pixel]] = True
+
     df = pd.DataFrame({
         "lon": lon.ravel(),
         "lat": lat.ravel(),
@@ -166,6 +199,7 @@ def _granule_to_dataframe(path, max_qual_flag, open_ocean_flag_value):
         "height_cor_xover": corr.ravel(),
         "quality_flag": qual.ravel(),
         "surface_flag": surface.ravel(),
+        "is_leftmost": is_leftmost.ravel(),
     })
     df["cycle"] = cycle
     df["pass"] = pass_number
@@ -180,13 +214,18 @@ def _granule_to_dataframe(path, max_qual_flag, open_ocean_flag_value):
     df["lat"] = df["lat"].round(6)
     df["swot_ssha"] = df["swot_ssha"].round(4)
 
-    return df[["lon", "lat", "time", "cycle", "pass", "swot_ssha", "quality_flag"]]
+    return df[["lon", "lat", "time", "cycle", "pass", "swot_ssha", "quality_flag", "is_leftmost"]]
 
 
 def main():
     parser = argparse.ArgumentParser(description="Download and canonicalize SWOT L2 KaRIn Expert granules into one Parquet table")
     parser.add_argument("--config", type=str, required=True, help="Path to a data_swot_l2 config YAML file")
-    parser.add_argument("--force", action="store_true", help="Re-download even if granules already exist locally")
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Re-download every granule even if it already exists locally with a matching checksum "
+             "(passed through to podaac-data-downloader's own -f flag; without this, only missing/"
+             "mismatched granules are (re-)fetched)",
+    )
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -200,14 +239,9 @@ def main():
         )
 
     raw_dir = SCRIPT_DIR / "data" / "karin" / config["name"]
-    granule_paths = sorted(raw_dir.glob("SWOT_L2_LR_SSH_Expert_*.nc")) if raw_dir.exists() else []
-
-    if granule_paths and not args.force:
-        print(f"Found {len(granule_paths)} already-downloaded Expert granule(s) in {raw_dir}, skipping download.")
-    else:
-        print(f"Downloading Expert granules for '{config['name']}' ({config['start_date']} to {config['end_date']})...")
-        _download_granules(config, raw_dir)
-        granule_paths = sorted(raw_dir.glob("SWOT_L2_LR_SSH_Expert_*.nc"))
+    print(f"Checking Expert granules for '{config['name']}' ({config['start_date']} to {config['end_date']})...")
+    _download_granules(config, raw_dir, force=args.force)
+    granule_paths = sorted(raw_dir.glob("SWOT_L2_LR_SSH_Expert_*.nc"))
 
     if not granule_paths:
         raise FileNotFoundError(

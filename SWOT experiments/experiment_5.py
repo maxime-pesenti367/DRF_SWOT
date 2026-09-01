@@ -583,7 +583,7 @@ def _retrain_and_save_candidate(
         colorbar_label="DRF Predicted SLA (m)", save_path=candidate_dir / "final_mean.png",
     )
     _save_global_grid_plot(
-        grid_var_pred.T.numpy(), cmap="viridis", vmin=0, vmax=0.2,
+        grid_var_pred.T.numpy(), cmap="viridis", vmin=0, vmax=0.1,
         colorbar_label="DRF Variance", save_path=candidate_dir / "final_variance.png",
     )
     # Raw arrays behind the two PNGs above -- previously computed, plotted,
